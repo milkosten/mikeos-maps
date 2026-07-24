@@ -174,20 +174,10 @@ class TripManager private constructor(private val appContext: Context) {
             lastLat = fix.lat, lastLon = fix.lon,
         )
 
-        // Throttled trip.progress broadcast (~once/60s).
-        val now = System.currentTimeMillis()
-        if (now - lastProgressBroadcastMs >= PROGRESS_THROTTLE_MS) {
-            lastProgressBroadcastMs = now
-            broadcast(
-                "trip.progress",
-                JSONObject()
-                    .put("lat", fix.lat)
-                    .put("lon", fix.lon)
-                    .put("speed_kmh", speed)
-                    .put("ts", java.time.Instant.ofEpochMilli(fix.ts).toString())
-                    .toString(),
-            )
-        }
+        // NOTE: we intentionally do NOT broadcast `trip.progress` on the hive. The trail is
+        // persisted to trips-cloud via the sample POST above, and no agent consumes per-beat
+        // location — broadcasting it to all ~11 siblings every beat was pure hive spam. Trip
+        // lifecycle stays on the hive via trip.started / trip.ended only.
     }
 
     // ---- END -------------------------------------------------------------------------------
