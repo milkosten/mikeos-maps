@@ -79,6 +79,27 @@ class MikeAgent internal constructor(
         java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     )
 
+    /**
+     * App-registered DETERMINISTIC handlers for DOMAIN hive message types (e.g. `trip.started`,
+     * `route.pois`, `story.ready`). Unlike the beat inbox — which is LLM-gated and suppressed by
+     * the change-gate — a domain handler fires on EVERY matching message, off the socket thread,
+     * so proactive cross-app reactions never depend on the brain picking a skill (the #1 cause of
+     * "the app does nothing"). Register right after the agent is built:
+     *
+     *     agent.onDomain("trip.started") { msg -> /* parse msg.body, act, broadcast */ }
+     *
+     * Handlers run on [hiveScope] (never inline on the socket's read coroutine, per the deadlock
+     * rule) and MAY freely `hiveSocket.send/broadcast`. Best-effort: a throwing handler is
+     * swallowed. Dedup on your own domain key (e.g. trip_id) inside the handler.
+     */
+    private val domainHandlers =
+        java.util.concurrent.ConcurrentHashMap<String, suspend (HiveMessage) -> Unit>()
+
+    /** Register (or replace) the deterministic handler for a domain hive message [type]. */
+    fun onDomain(type: String, handler: suspend (HiveMessage) -> Unit) {
+        domainHandlers[type] = handler
+    }
+
     // Beat counter so we re-announce our capabilities periodically (late joiners).
     @Volatile private var beatsSinceStart = 0L
 
@@ -118,8 +139,8 @@ class MikeAgent internal constructor(
             // Return immediately; do the real work off the onMessage coroutine.
             hiveScope.launch { runCatching { onHiveMessage(msg) } }
         }
-        // Announce who we are + what we offer to everyone on the hive.
-        hiveScope.launch { runCatching { announceCapabilities() } }
+        // Announce who we are + what we offer to everyone on the hive (first wire = forced).
+        hiveScope.launch { runCatching { announceCapabilities(force = true) } }
         Log.i(tag, "hive collaboration protocol wired")
     }
 
@@ -128,7 +149,15 @@ class MikeAgent internal constructor(
         when (msg.type) {
             "capability.announce" -> ingestAnnounce(msg)
             "agent.question" -> answerQuestion(msg)
-            else -> { /* other types flow to the beat via the inbox as before */ }
+            else -> {
+                // A registered domain handler (deterministic, e.g. trip.started/route.pois/
+                // story.ready) fires here; anything unhandled still flows to the beat inbox.
+                domainHandlers[msg.type]?.let { h ->
+                    Log.i(tag, "domain handler for ${msg.type} from ${msg.from}")
+                    runCatching { h(msg) }
+                        .onFailure { Log.w(tag, "domain handler ${msg.type} failed: ${it.message}") }
+                }
+            }
         }
     }
 
@@ -246,15 +275,37 @@ class MikeAgent internal constructor(
     }
 
     /** Broadcast our capabilities to every sibling on the hive. */
-    private suspend fun announceCapabilities() {
+    // Announce throttle. A broadcast is persisted as ONE hive row PER recipient, so an
+    // unthrottled announce on every connect/reconnect/forced-beat floods the hive (this caused
+    // a 200+ row/16-min "capability.announce" storm). Re-announce at most once per window; the
+    // direct announceCapabilitiesTo(newSibling) still converges late joiners immediately.
+    @Volatile private var lastAnnounceMs = 0L
+    private val announceMinIntervalMs = 20 * 60 * 1000L   // 20 min
+    private val announcedToAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * Broadcast our capabilities to all siblings — THROTTLED. [force] (first wire only) bypasses
+     * the window; reconnects and forced beats do not, so churn can't spam the hive.
+     */
+    private suspend fun announceCapabilities(force: Boolean = false) {
         val socket = hiveSocket ?: return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastAnnounceMs < announceMinIntervalMs) {
+            Log.d(tag, "capability.announce suppressed (throttled)")
+            return
+        }
+        lastAnnounceMs = now
         val n = socket.broadcast("capability.announce", buildAnnounceBody())
         Log.i(tag, "capability.announce broadcast to $n sibling(s)")
     }
 
-    /** Send our capabilities to ONE sibling (used to converge directories, loop-safe). */
+    /** Send our capabilities to ONE sibling (converge directories, loop-safe) — deduped per target. */
     private suspend fun announceCapabilitiesTo(to: String) {
         val socket = hiveSocket ?: return
+        val now = System.currentTimeMillis()
+        val last = announcedToAt[to] ?: 0L
+        if (now - last < announceMinIntervalMs) return   // don't re-greet the same sibling on churn
+        announcedToAt[to] = now
         runCatching { socket.send(to, "capability.announce", buildAnnounceBody()) }
     }
 

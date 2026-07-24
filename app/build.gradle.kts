@@ -14,7 +14,7 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
+        versionCode = 2
         versionName = "0.1.0-maps"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
