@@ -58,7 +58,7 @@ object NavGeo {
         return r * 2 * atan2(sqrt(a), sqrt(1 - a))
     }
 
-    /** Distance (km) to the nearest vertex of [route] — used for off-route detection. */
+    /** Distance (km) to the nearest vertex of [route]. */
     fun nearestKm(route: List<PolylineCodec.LatLon>, curLat: Double, curLon: Double): Double {
         if (route.isEmpty()) return Double.MAX_VALUE
         var best = Double.MAX_VALUE
@@ -67,6 +67,42 @@ object NavGeo {
             if (d < best) best = d
         }
         return best
+    }
+
+    /**
+     * Cross-track distance (meters) from (curLat,curLon) to the route *line* — the perpendicular
+     * distance to the nearest SEGMENT, not just the nearest vertex. This is what off-route detection
+     * must use: on a long straight stretch the polyline vertices can be far apart, so vertex distance
+     * falsely reads as "off route" even when you're driving right on the road.
+     */
+    fun distanceToRouteM(route: List<PolylineCodec.LatLon>, curLat: Double, curLon: Double): Double {
+        if (route.isEmpty()) return Double.MAX_VALUE
+        if (route.size == 1) return haversineKm(curLat, curLon, route[0].lat, route[0].lon) * 1000.0
+        // Local equirectangular projection with the point at the origin (accurate at these scales).
+        val mPerDegLat = 111_320.0
+        val mPerDegLon = 111_320.0 * cos(Math.toRadians(curLat))
+        var ax = (route[0].lon - curLon) * mPerDegLon
+        var ay = (route[0].lat - curLat) * mPerDegLat
+        var best = Double.MAX_VALUE
+        for (i in 1 until route.size) {
+            val bx = (route[i].lon - curLon) * mPerDegLon
+            val by = (route[i].lat - curLat) * mPerDegLat
+            val d = originToSegment(ax, ay, bx, by)
+            if (d < best) best = d
+            ax = bx; ay = by
+        }
+        return best
+    }
+
+    /** Distance from the origin (0,0) to the segment (ax,ay)–(bx,by), same units as the inputs. */
+    private fun originToSegment(ax: Double, ay: Double, bx: Double, by: Double): Double {
+        val dx = bx - ax
+        val dy = by - ay
+        val len2 = dx * dx + dy * dy
+        val t = if (len2 <= 1e-9) 0.0 else (((-ax) * dx + (-ay) * dy) / len2).coerceIn(0.0, 1.0)
+        val cx = ax + t * dx
+        val cy = ay + t * dy
+        return sqrt(cx * cx + cy * cy)
     }
 
     /**

@@ -132,11 +132,13 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
-        // Off-route: reroute after a couple of ticks clearly off the line.
-        val offM = NavGeo.nearestKm(pts, fix.lat, fix.lon) * 1000.0
+        // Off-route: use CROSS-TRACK distance to the route line (not nearest vertex — that falsely
+        // fires on long straight segments). Require several consecutive ticks so GPS wobble on-road
+        // never triggers a reroute.
+        val offM = NavGeo.distanceToRouteM(pts, fix.lat, fix.lon)
         if (offM > OFF_ROUTE_M) {
             offRouteTicks++
-            if (offRouteTicks >= 2) reroute(fix.lat, fix.lon, a)
+            if (offRouteTicks >= OFF_ROUTE_TICKS) reroute(fix.lat, fix.lon, a)
         } else {
             offRouteTicks = 0
         }
@@ -305,6 +307,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val LOCATION_POLL_MS = 3_000L
         private const val ARRIVE_M = 40.0      // auto-end the trip within this of the destination
-        private const val OFF_ROUTE_M = 60.0   // reroute when this far off the route line
+        private const val OFF_ROUTE_M = 70.0   // reroute when the cross-track distance exceeds this
+        private const val OFF_ROUTE_TICKS = 4  // …for this many consecutive polls (~12s) — avoids noise
     }
 }
