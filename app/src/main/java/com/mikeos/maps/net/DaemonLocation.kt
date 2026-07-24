@@ -27,7 +27,14 @@ object DaemonLocation {
 
     private const val TAG = "DaemonLocation"
 
-    data class Fix(val lat: Double, val lon: Double, val speedKmh: Double?, val ts: Long)
+    data class Fix(
+        val lat: Double,
+        val lon: Double,
+        val speedKmh: Double?,
+        val ts: Long,
+        /** Course over ground (degrees, 0=N) from the previous fix, or null when not moving enough. */
+        val bearing: Double? = null,
+    )
 
     private val client: OkHttpClient =
         loopbackTrustingClientPublic(BuildConfig.DAEMON_BASE_URL).newBuilder()
@@ -72,9 +79,11 @@ object DaemonLocation {
                     else -> null
                 }
                 val now = System.currentTimeMillis()
+                // Bearing + derived speed both read the PREVIOUS fix, so compute before updating it.
+                val bearing = bearingFromLast(lat, lon)
                 val derived = speedKmh ?: derivedSpeedKmh(lat, lon, now)
                 lastLat = lat; lastLon = lon; lastTs = now
-                Fix(lat, lon, derived, now)
+                Fix(lat, lon, derived, now, bearing)
             }
         } catch (e: Exception) {
             Log.w(TAG, "location failed: ${e.message}")
@@ -92,6 +101,18 @@ object DaemonLocation {
         val kmh = (meters / dtSec) * 3.6
         // Clamp absurd jumps (GPS teleport) to avoid poisoning the congestion model.
         return kmh.coerceIn(0.0, 250.0)
+    }
+
+    /** Initial bearing (deg, 0=N) from the previous fix to (lat,lon); null if we barely moved. */
+    private fun bearingFromLast(lat: Double, lon: Double): Double? {
+        val pLat = lastLat ?: return null
+        val pLon = lastLon ?: return null
+        if (haversineMeters(pLat, pLon, lat, lon) < 8.0) return null   // too small → noisy
+        val dLon = Math.toRadians(lon - pLon)
+        val y = sin(dLon) * cos(Math.toRadians(lat))
+        val x = cos(Math.toRadians(pLat)) * sin(Math.toRadians(lat)) -
+            sin(Math.toRadians(pLat)) * cos(Math.toRadians(lat)) * cos(dLon)
+        return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
     }
 
     private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {

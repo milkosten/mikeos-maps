@@ -3,6 +3,7 @@ package com.mikeos.maps
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -58,6 +59,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -97,6 +99,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Never let the screen time out while MikeMaps is up — you're navigating.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         requestPermissions()
         // Embed the shared MikeAgent runtime (soul + nav skills + heartbeat + live hive).
         MapsMikeAgent.install(this)
@@ -138,6 +142,8 @@ private fun MapFirstScreen(vm: MapsViewModel) {
 
     var follow by remember { mutableStateOf(true) }
     var menuOpen by remember { mutableStateOf(false) }
+    // Orientation: heading-up (course-up) is the default while driving; tap the compass for north-up.
+    var northUp by remember { mutableStateOf(false) }
 
     // Poll the daemon fix while the map is on screen (moving dot + prefetch + HUD).
     DisposableEffect(Unit) {
@@ -158,8 +164,21 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             routePoints = state.routePoints,
             follow = follow,
             navigating = active != null,
+            headingUp = !northUp,
+            bearingDeg = location?.bearing,
             onUserPan = { follow = false },
             modifier = Modifier.fillMaxSize(),
+        )
+
+        // Compass — tap to toggle heading-up (default while driving) ↔ true-north. The red needle
+        // points to real north (rotates opposite the map's bearing).
+        CompassButton(
+            appliedBearing = if (active != null && !northUp) (location?.bearing ?: 0.0) else 0.0,
+            northUp = northUp,
+            onClick = { northUp = !northUp },
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 14.dp),
         )
 
         // Top overlay: the turn-by-turn banner while navigating, else the ☰ menu + agent window.
@@ -462,6 +481,30 @@ private fun MenuSheet(
 }
 
 // ---- Small reusables -----------------------------------------------------------------------
+
+@Composable
+private fun CompassButton(
+    appliedBearing: Double,
+    northUp: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier
+            .size(46.dp)
+            .clip(CircleShape)
+            .background(MikeSurface.copy(alpha = 0.92f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Filled.Navigation,
+            contentDescription = if (northUp) "North up — tap to follow heading" else "Heading up — tap for north up",
+            tint = MikeRed,
+            modifier = Modifier.size(22.dp).rotate(-appliedBearing.toFloat()),
+        )
+    }
+}
 
 @Composable
 private fun CircleButton(onClick: () -> Unit, content: @Composable () -> Unit) {

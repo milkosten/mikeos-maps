@@ -53,6 +53,8 @@ fun NavigationMap(
     routePoints: List<PolylineCodec.LatLon>,
     follow: Boolean,
     navigating: Boolean,
+    headingUp: Boolean,
+    bearingDeg: Double?,
     onUserPan: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -71,6 +73,7 @@ fun NavigationMap(
                     map.uiSettings.isAttributionEnabled = true
                     map.uiSettings.isLogoEnabled = true
                     map.uiSettings.isRotateGesturesEnabled = true
+                    map.uiSettings.isCompassEnabled = false   // we render our own compass button
                     // User drag → stop following so he can look around.
                     map.addOnMoveListener(object : MapLibreMap.OnMoveListener {
                         override fun onMoveBegin(detector: MoveGestureDetector) { currentOnUserPan() }
@@ -106,12 +109,12 @@ fun NavigationMap(
                                 PropertyFactory.circleStrokeWidth(3f),
                             ),
                         )
-                        holder.render(location, routePoints, follow, navigating)
+                        holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg)
                     }
                 }
             }
         },
-        update = { holder.render(location, routePoints, follow, navigating) },
+        update = { holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg) },
     )
 }
 
@@ -123,8 +126,17 @@ private class NavMapHolder {
     private var lastFittedRoute: List<PolylineCodec.LatLon>? = null
     // Smoothed speed for the adaptive nav zoom (raw GPS speed is noisy → EMA to avoid zoom jitter).
     private var smoothedKmh = 0.0
+    // Last good travel bearing — kept while stopped (bearing is null) so the map doesn't snap north.
+    private var lastBearing: Double? = null
 
-    fun render(loc: DaemonLocation.Fix?, points: List<PolylineCodec.LatLon>, follow: Boolean, navigating: Boolean) {
+    fun render(
+        loc: DaemonLocation.Fix?,
+        points: List<PolylineCodec.LatLon>,
+        follow: Boolean,
+        navigating: Boolean,
+        headingUp: Boolean,
+        bearingDeg: Double?,
+    ) {
         val s = style ?: return
         val routeGeom: Geometry =
             if (points.size >= 2) LineString.fromLngLats(points.map { Point.fromLngLat(it.lon, it.lat) })
@@ -144,8 +156,16 @@ private class NavMapHolder {
             } else {
                 if (!centeredOnce) INITIAL_ZOOM else m.cameraPosition.zoom
             }
+            // Heading-up while navigating: rotate the map so the road ahead points forward. Keep the
+            // last bearing while stopped (bearing goes null) so it doesn't spin back to north.
+            if (bearingDeg != null) lastBearing = bearingDeg
+            val bearing = if (navigating && headingUp) (lastBearing ?: 0.0) else 0.0
             centeredOnce = true
-            val pos = CameraPosition.Builder().target(LatLng(loc.lat, loc.lon)).zoom(zoom).build()
+            val pos = CameraPosition.Builder()
+                .target(LatLng(loc.lat, loc.lon))
+                .zoom(zoom)
+                .bearing(bearing)
+                .build()
             runCatching { m.easeCamera(CameraUpdateFactory.newCameraPosition(pos), CAMERA_MS) }
         } else if (!follow && points.size >= 2 && lastFittedRoute !== points) {
             // Not following (route preview, or no fix yet) — frame the whole route once.
