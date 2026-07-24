@@ -39,20 +39,25 @@ object PoiSearch {
     ): List<Geocoder.Place> = withContext(Dispatchers.IO) {
         // POI name = the part before any comma, minus French articles + punctuation. Keep letters/
         // digits/spaces only, so what's interpolated into the Overpass regex can't inject anything.
-        val name = rawQuery.substringBefore(",")
+        val cleaned = rawQuery.substringBefore(",")
             .lowercase()
-            .replace(Regex("\\b(l'|d'|le|la|les|du|de|des|the)\\b|'"), " ")
+            .replace(Regex("\\b(l'|d'|le|la|les|du|de|des|et|the)\\b|'"), " ")
             .replace(Regex("[^\\p{L}0-9 ]"), " ")
             .trim()
             .replace(Regex("\\s+"), " ")
-        if (name.length < 3) return@withContext emptyList()
+        // Match names that contain ALL the words (any order/position) — so "pierre vacances" finds
+        // "Pierre et Vacances", not just an exact contiguous phrase. Each word is a separate AND
+        // filter on the element's name.
+        val words = cleaned.split(" ").filter { it.length >= 3 }.take(4)
+        if (words.isEmpty()) return@withContext emptyList()
+        val filter = words.joinToString("") { "[\"name\"~\"$it\",i]" }
 
         val d = 0.30   // ~33 km box around the user
         val bbox = "${nearLat - d},${nearLon - d},${nearLat + d},${nearLon + d}"
         val ql = """
             [out:json][timeout:20];
-            (node["name"~"$name",i]($bbox);
-             way["name"~"$name",i]($bbox););
+            (node$filter($bbox);
+             way$filter($bbox););
             out center $limit;
         """.trimIndent()
 
