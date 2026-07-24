@@ -98,4 +98,31 @@ object NavGuidance {
     }
 
     private const val ADVANCE_M = 20.0
+
+    /**
+     * OSRM's planned time (minutes) for the LAST [remKm] of the route — walks the steps from the
+     * end summing their durations until [remKm] is covered (partial on the boundary step). This is
+     * road-type aware (highway steps are fast, city steps slow), unlike a flat remainingKm/speed.
+     * Null if there are no usable step durations (caller falls back to the speed-based estimate).
+     */
+    fun plannedRemainingMin(steps: List<RouteStep>, remKm: Double): Double? {
+        if (steps.isEmpty()) return null
+        if (steps.sumOf { it.durationS } <= 0.0) return null
+        val remM = (remKm * 1000.0).coerceAtLeast(0.0)
+        var accM = 0.0
+        var accS = 0.0
+        for (st in steps.asReversed()) {
+            if (accM >= remM) break
+            val stepM = st.distanceM
+            val need = remM - accM
+            if (stepM <= need || stepM <= 0.0) {
+                accM += stepM
+                accS += st.durationS
+            } else {
+                accS += st.durationS * (need / stepM)
+                accM += need
+            }
+        }
+        return accS / 60.0
+    }
 }

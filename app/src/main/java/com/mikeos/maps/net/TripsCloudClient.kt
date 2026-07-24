@@ -66,6 +66,7 @@ class TripsCloudClient(
         val modifier: String?,   // left, right, slight left, sharp right, straight, uturn, …
         val name: String,        // the road you're on after the maneuver
         val distanceM: Double,   // length of this step
+        val durationS: Double,   // OSRM planned duration of this step (road-type aware) — for ETA
         val lat: Double,
         val lon: Double,
     )
@@ -150,6 +151,7 @@ class TripsCloudClient(
                             modifier = s.optString("modifier").takeUnless { it.isBlank() || it == "null" },
                             name = s.optString("name"),
                             distanceM = s.optDouble("distance_m", 0.0),
+                            durationS = s.optDouble("duration_s", 0.0),
                             lat = lat, lon = lon,
                         )
                     }

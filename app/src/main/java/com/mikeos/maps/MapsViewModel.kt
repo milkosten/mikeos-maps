@@ -128,19 +128,32 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             _guidance.value = null
             return
         }
-        // Smoothed ETA: a moving average of speed drives a stable ETA (instantaneous speed made it
-        // jump wildly). The live estimate is also logged with the 5s samples for later analysis.
+        // --- ETA -------------------------------------------------------------------------------
+        // The live estimate is logged with the 5s samples for later analysis.
         val remKm = NavGeo.remainingKm(pts, fix.lat, fix.lon)
-        val plannedAvg = if (a.etaMin > 0.5 && a.km > 0) a.km / (a.etaMin / 60.0) else 40.0
         val rawKmh = fix.speedKmh ?: 0.0
+        val plannedAvg = if (a.etaMin > 0.5 && a.km > 0) a.km / (a.etaMin / 60.0) else 40.0
         emaSpeedKmh = if (!emaSpeedSeeded) {
             emaSpeedSeeded = true
             if (rawKmh > 1.0) rawKmh else plannedAvg
         } else {
             emaSpeedKmh * (1 - SPEED_EMA_ALPHA) + rawKmh * SPEED_EMA_ALPHA
         }
-        val effSpeed = emaSpeedKmh.coerceAtLeast(4.0)   // floor so a brief stop doesn't explode the ETA
-        val rawEta = remKm / effSpeed * 60.0
+
+        // Preferred: OSRM's planned time for the road AHEAD (highway-aware), scaled by our cumulative
+        // actual-vs-planned pace — trusting the plan early and the measured pace more as we progress.
+        // Fallback (no step durations): remaining distance ÷ moving-average speed.
+        val plannedRemMin = NavGuidance.plannedRemainingMin(_state.value.routeSteps, remKm)
+        val rawEta: Double = if (plannedRemMin != null && a.km > 0 && a.etaMin > 0.5) {
+            val elapsedMin = (System.currentTimeMillis() - a.startedAtMs) / 60_000.0
+            val plannedForCovered = (a.etaMin - plannedRemMin).coerceAtLeast(0.0)
+            val trust = ((a.km - remKm) / a.km).coerceIn(0.0, 1.0)
+            val rawRatio = if (plannedForCovered > 0.3) elapsedMin / plannedForCovered else 1.0
+            val ratio = ((1.0 - trust) + trust * rawRatio).coerceIn(0.6, 2.5)
+            plannedRemMin * ratio
+        } else {
+            remKm / emaSpeedKmh.coerceAtLeast(4.0) * 60.0
+        }
         emaEtaMin = if (emaEtaMin.isNaN()) rawEta else emaEtaMin * (1 - ETA_EMA_ALPHA) + rawEta * ETA_EMA_ALPHA
         // Speedometer shows the ACTUAL current speed; ETA/remaining use the smoothed value.
         _navInfo.value = NavInfo(speedKmh = rawKmh, remainingKm = remKm, remainingMin = emaEtaMin)
