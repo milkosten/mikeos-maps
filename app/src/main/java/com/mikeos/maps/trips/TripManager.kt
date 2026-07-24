@@ -128,6 +128,7 @@ class TripManager private constructor(private val appContext: Context) {
         broadcast(
             "trip.started",
             JSONObject()
+                .put("trip_id", tripId)   // consumers (Guide->route.pois, Storyteller) correlate on this
                 .put("dest", destName)
                 .put("eta_min", route.etaMin)
                 .put("km", route.km)
