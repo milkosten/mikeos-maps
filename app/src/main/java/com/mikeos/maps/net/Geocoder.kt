@@ -29,6 +29,37 @@ object Geocoder {
         .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
+    /** Type-ahead: up to [limit] candidate places for a partial query. Empty on failure. */
+    suspend fun search(query: String, limit: Int = 5): List<Place> = withContext(Dispatchers.IO) {
+        val q = query.trim()
+        if (q.isBlank()) return@withContext emptyList()
+        val url = "https://nominatim.openstreetmap.org/search?q=" +
+            URLEncoder.encode(q, "UTF-8") + "&format=json&limit=$limit"
+        val req = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA)
+            .header("Accept", "application/json")
+            .get()
+            .build()
+        try {
+            client.newCall(req).execute().use { resp ->
+                val raw = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) return@withContext emptyList()
+                val arr = runCatching { JSONArray(raw) }.getOrNull() ?: return@withContext emptyList()
+                (0 until arr.length()).mapNotNull { i ->
+                    val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                    val lat = o.optString("lat").toDoubleOrNull() ?: return@mapNotNull null
+                    val lon = o.optString("lon").toDoubleOrNull() ?: return@mapNotNull null
+                    val name = o.optString("display_name").takeUnless { it.isBlank() } ?: return@mapNotNull null
+                    Place(name = name, lat = lat, lon = lon)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "search failed: ${e.message}")
+            emptyList()
+        }
+    }
+
     /** Geocode a free-text destination to a single best hit. Null if nothing found / failed. */
     suspend fun geocode(query: String): Place? = withContext(Dispatchers.IO) {
         val q = query.trim()

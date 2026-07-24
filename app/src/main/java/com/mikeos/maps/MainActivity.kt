@@ -27,10 +27,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Straight
 import androidx.compose.material.icons.filled.TurnLeft
@@ -45,6 +48,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -65,6 +69,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -259,6 +264,10 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                     vm.previewDestination(name)
                     menuOpen = false
                 },
+                onChoose = { s ->
+                    vm.chooseSuggestion(s)
+                    menuOpen = false
+                },
             )
         }
     }
@@ -321,11 +330,13 @@ private fun DrivingHud(
         colors = CardDefaults.cardColors(containerColor = MikeSurface),
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            // No address here — you know where you're going; the map gets the space (map-first).
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("NAVIGATING", color = MikeGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-                    Text("→ ${a.destName}", color = MikeOnSurface, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                }
+                Text(
+                    "NAVIGATING",
+                    color = MikeGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp,
+                    modifier = Modifier.weight(1f),
+                )
                 Button(
                     onClick = onEnd,
                     enabled = !busy,
@@ -333,7 +344,7 @@ private fun DrivingHud(
                     colors = ButtonDefaults.buttonColors(containerColor = MikeRed, contentColor = MikeOnSurface),
                 ) { Text("End", fontWeight = FontWeight.Bold) }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Metric("${speed.roundToInt()}", "km/h", hero = true)
                 Metric(NavFormat.distance(remKm), "to go")
@@ -431,6 +442,7 @@ private fun MenuSheet(
     onQueryChange: (String) -> Unit,
     onPreview: () -> Unit,
     onResume: (String) -> Unit,
+    onChoose: (Suggestion) -> Unit,
 ) {
     Column(
         Modifier
@@ -451,6 +463,13 @@ private fun MenuSheet(
                 placeholder = { Text("Where to?", color = MikeMuted) },
                 shape = RoundedCornerShape(14.dp),
                 singleLine = true,
+                trailingIcon = {
+                    if (state.query.isNotEmpty()) {
+                        IconButton(onClick = { onQueryChange("") }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear", tint = MikeMuted)
+                        }
+                    }
+                },
             )
             Spacer(Modifier.size(10.dp))
             Button(
@@ -462,6 +481,12 @@ private fun MenuSheet(
                 if (state.busy) CircularProgressIndicator(Modifier.size(16.dp), color = MikeBg, strokeWidth = 2.dp)
                 else { Icon(Icons.Filled.PlayArrow, contentDescription = null); Text("Preview", fontWeight = FontWeight.Bold) }
             }
+        }
+
+        // Type-ahead suggestions (history first, then places) — tap to preview a route to it.
+        if (state.suggestions.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            state.suggestions.forEach { s -> SuggestionRow(s, onClick = { onChoose(s) }) }
         }
 
         Spacer(Modifier.height(22.dp))
@@ -481,6 +506,27 @@ private fun MenuSheet(
 }
 
 // ---- Small reusables -----------------------------------------------------------------------
+
+@Composable
+private fun SuggestionRow(s: Suggestion, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            if (s.fromHistory) Icons.Filled.History else Icons.Filled.Place,
+            contentDescription = null,
+            tint = if (s.fromHistory) MikeAccent else MikeMuted,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.size(12.dp))
+        Text(s.label, color = MikeOnSurface, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
 
 @Composable
 private fun CompassButton(

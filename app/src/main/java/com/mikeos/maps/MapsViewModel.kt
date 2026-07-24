@@ -22,6 +22,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+/** A type-ahead destination suggestion — from trip history (coords null → re-geocoded) or Nominatim. */
+data class Suggestion(
+    val label: String,
+    val lat: Double?,
+    val lon: Double?,
+    val fromHistory: Boolean,
+)
+
 /** The routing / active-trip / history screen state. */
 data class MapsState(
     val query: String = "",
@@ -36,6 +44,8 @@ data class MapsState(
     val routeSteps: List<TripsCloudClient.RouteStep> = emptyList(),
     // A route has been computed + framed but the trip hasn't started yet (preview → Start).
     val previewing: Boolean = false,
+    // Live type-ahead suggestions while entering a destination.
+    val suggestions: List<Suggestion> = emptyList(),
     val history: List<TripsCloudClient.Trip> = emptyList(),
 )
 
@@ -62,6 +72,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     val guidance: StateFlow<Guidance?> = _guidance.asStateFlow()
 
     private var locationJob: Job? = null
+    private var suggestJob: Job? = null
 
     // A previewed-but-not-started route (see [preview] → [startPreviewed] / [cancelPreview]).
     private var pendingPlace: Geocoder.Place? = null
@@ -208,6 +219,48 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onQueryChange(q: String) {
         _state.value = _state.value.copy(query = q)
+        suggestJob?.cancel()
+        val query = q.trim()
+        if (query.length < 3) {
+            _state.value = _state.value.copy(suggestions = emptyList())
+            return
+        }
+        // Debounced type-ahead: HISTORY matches first, then Nominatim candidates.
+        suggestJob = viewModelScope.launch {
+            delay(SUGGEST_DEBOUNCE_MS)
+            val hist = _state.value.history
+                .mapNotNull { it.destName }
+                .filter { it.contains(query, ignoreCase = true) }
+                .distinct()
+                .take(3)
+                .map { Suggestion(it, null, null, fromHistory = true) }
+            val geo = runCatching { Geocoder.search(query, 5) }.getOrDefault(emptyList())
+                .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
+            val seen = hist.map { it.label.lowercase() }.toMutableSet()
+            val merged = hist + geo.filter { seen.add(it.label.lowercase()) }
+            _state.value = _state.value.copy(suggestions = merged.take(7))
+        }
+    }
+
+    /** Pick a suggestion → preview a route to it (using its coords, or re-geocoding a history hit). */
+    fun chooseSuggestion(s: Suggestion) {
+        if (active.value != null) {
+            _state.value = _state.value.copy(notice = "A trip is already active. End it first.")
+            return
+        }
+        suggestJob?.cancel()
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true, notice = null)
+            if (s.lat != null && s.lon != null) {
+                enterPreview(s.label, s.lat, s.lon)
+            } else {
+                val place = trips.geocode(s.label) ?: run {
+                    _state.value = _state.value.copy(busy = false, notice = "Couldn't find \"${s.label}\".")
+                    return@launch
+                }
+                enterPreview(place.name, place.lat, place.lon)
+            }
+        }
     }
 
     /**
@@ -225,6 +278,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(notice = "A trip is already active. End it first.")
             return
         }
+        suggestJob?.cancel()
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true, notice = "Finding $dest…")
             val place = trips.geocode(dest)
@@ -232,34 +286,45 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
                 _state.value = _state.value.copy(busy = false, notice = "Couldn't find \"$dest\".")
                 return@launch
             }
-            _state.value = _state.value.copy(notice = "Reading your location…")
-            val fix = trips.currentFix()
-            if (fix == null) {
-                _state.value = _state.value.copy(busy = false, notice = "No location fix from the daemon (GPS provider may be down).")
-                return@launch
-            }
-            _state.value = _state.value.copy(notice = "Routing…")
-            val route = trips.route(fix.lat, fix.lon, place.lat, place.lon)
-            if (route == null) {
-                _state.value = _state.value.copy(busy = false, notice = "Couldn't compute a route to \"$dest\".")
-                return@launch
-            }
-            val points = runCatching { PolylineCodec.decode(route.polyline) }.getOrDefault(emptyList())
-            pendingPlace = place
-            pendingFix = fix
-            pendingRoute = route
-            resetGuidanceTrackers()
-            _state.value = _state.value.copy(
-                busy = false,
-                notice = null,
-                routePoints = points,
-                routeSteps = route.steps,
-                routeKm = route.km,
-                routeEtaMin = route.etaMin,
-                destName = place.name,
-                previewing = true,
-            )
+            enterPreview(place.name, place.lat, place.lon)
         }
+    }
+
+    /**
+     * Route from the current daemon fix to (lat,lon) and enter PREVIEW (framed, not started). Clears
+     * the search field + suggestions so the next destination starts blank. Shared by [preview] and
+     * [chooseSuggestion]. Assumes busy=true was already set by the caller.
+     */
+    private suspend fun enterPreview(name: String, lat: Double, lon: Double) {
+        _state.value = _state.value.copy(notice = "Reading your location…")
+        val fix = trips.currentFix()
+        if (fix == null) {
+            _state.value = _state.value.copy(busy = false, notice = "No location fix from the daemon (GPS provider may be down).")
+            return
+        }
+        _state.value = _state.value.copy(notice = "Routing…")
+        val route = trips.route(fix.lat, fix.lon, lat, lon)
+        if (route == null) {
+            _state.value = _state.value.copy(busy = false, notice = "Couldn't compute a route to \"$name\".")
+            return
+        }
+        val points = runCatching { PolylineCodec.decode(route.polyline) }.getOrDefault(emptyList())
+        pendingPlace = Geocoder.Place(name, lat, lon)
+        pendingFix = fix
+        pendingRoute = route
+        resetGuidanceTrackers()
+        _state.value = _state.value.copy(
+            busy = false,
+            notice = null,
+            query = "",
+            suggestions = emptyList(),
+            routePoints = points,
+            routeSteps = route.steps,
+            routeKm = route.km,
+            routeEtaMin = route.etaMin,
+            destName = name,
+            previewing = true,
+        )
     }
 
     /** Resume a past drive (tapped in history): preview a route to that named destination. */
@@ -295,6 +360,8 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         _guidance.value = null
         _state.value = _state.value.copy(
             previewing = false,
+            query = "",
+            suggestions = emptyList(),
             routePoints = emptyList(),
             routeSteps = emptyList(),
             routeKm = null,
@@ -312,7 +379,9 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(
                 busy = false,
                 notice = if (s != null) "Trip ended: ${"%.0f".format(s.durationMin)} min, ${s.sampleCount} samples." else "Ended locally (cloud unconfirmed).",
-                // Clear the route from the map once the trip is done.
+                // Clear the route + the search field once the trip is done (next entry starts blank).
+                query = "",
+                suggestions = emptyList(),
                 routePoints = emptyList(),
                 routeSteps = emptyList(),
                 routeKm = null,
@@ -334,6 +403,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val LOCATION_POLL_MS = 3_000L
+        private const val SUGGEST_DEBOUNCE_MS = 350L
         private const val ARRIVE_M = 40.0      // auto-end the trip within this of the destination
         private const val OFF_ROUTE_M = 70.0   // reroute when the cross-track distance exceeds this
         private const val OFF_ROUTE_TICKS = 4  // …for this many consecutive polls (~12s) — avoids noise

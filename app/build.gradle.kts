@@ -14,8 +14,8 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.4.5-smootheta"
+        versionCode = 10
+        versionName = "0.4.6-search"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
         buildConfigField("String", "DAEMON_BASE_URL", "\"https://127.0.0.1:7743\"")
