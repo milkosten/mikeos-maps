@@ -255,6 +255,20 @@ class TripManager private constructor(private val appContext: Context) {
         return cloud.recentTrips(key, limit)
     }
 
+    /** Log a destination search to trips-cloud (best-effort; no-op without a key). */
+    suspend fun logSearch(
+        query: String,
+        results: Int?,
+        chosenLabel: String? = null,
+        chosenLat: Double? = null,
+        chosenLon: Double? = null,
+        nearLat: Double? = null,
+        nearLon: Double? = null,
+    ) {
+        val key = apiKey() ?: return
+        cloud.logSearch(key, query, results, chosenLabel, chosenLat, chosenLon, nearLat, nearLon)
+    }
+
     suspend fun getTrip(tripId: String): TripsCloudClient.Trip? {
         val key = apiKey() ?: return null
         return cloud.getTrip(key, tripId)

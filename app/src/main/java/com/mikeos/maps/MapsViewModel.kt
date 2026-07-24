@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.mikeos.maps.nav.Guidance
 import com.mikeos.maps.nav.NavGeo
 import com.mikeos.maps.nav.NavGuidance
+import com.mikeos.maps.data.PlacesRepo
 import com.mikeos.maps.nav.NavInfo
 import com.mikeos.maps.nav.Speaker
 import com.mikeos.maps.net.DaemonLocation
@@ -238,21 +239,55 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(suggestions = emptyList())
             return
         }
-        // Debounced type-ahead: HISTORY matches first, then Nominatim candidates.
+        // Debounced type-ahead — offline cache + history show instantly, online candidates follow.
         suggestJob = viewModelScope.launch {
             delay(SUGGEST_DEBOUNCE_MS)
-            val hist = _state.value.history
-                .mapNotNull { it.destName }
-                .filter { it.contains(query, ignoreCase = true) }
-                .distinct()
-                .take(3)
-                .map { Suggestion(it, null, null, fromHistory = true) }
-            val geo = runCatching { Geocoder.search(query, 5) }.getOrDefault(emptyList())
-                .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
-            val seen = hist.map { it.label.lowercase() }.toMutableSet()
-            val merged = hist + geo.filter { seen.add(it.label.lowercase()) }
-            _state.value = _state.value.copy(suggestions = merged.take(7))
+            _state.value = _state.value.copy(suggestions = suggestFor(query))
         }
+    }
+
+    /** Explicit SEARCH (the button): produce a choosable list of results, and LOG the search. */
+    fun search() {
+        val q = _state.value.query.trim()
+        if (q.isBlank()) {
+            _state.value = _state.value.copy(notice = "Type a destination to search.")
+            return
+        }
+        if (active.value != null) {
+            _state.value = _state.value.copy(notice = "A trip is already active. End it first.")
+            return
+        }
+        suggestJob?.cancel()
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true, notice = null)
+            val results = suggestFor(q)
+            _state.value = _state.value.copy(
+                busy = false,
+                suggestions = results,
+                notice = if (results.isEmpty()) "No places found for \"$q\"." else null,
+            )
+            val near = _location.value
+            runCatching { trips.logSearch(q, results.size, nearLat = near?.lat, nearLon = near?.lon) }
+        }
+    }
+
+    /** Build suggestions: 1) offline fuzzy cache, 2) cloud-history names, 3) location-biased geocoder. */
+    private suspend fun suggestFor(query: String): List<Suggestion> {
+        val near = _location.value
+        val local = runCatching { PlacesRepo.search(getApplication(), query, 5) }
+            .getOrDefault(emptyList())
+            .map { Suggestion(it.label, it.lat, it.lon, fromHistory = true) }
+        val hist = _state.value.history
+            .mapNotNull { it.destName }
+            .filter { it.contains(query, ignoreCase = true) }
+            .distinct()
+            .take(2)
+            .map { Suggestion(it, null, null, fromHistory = true) }
+        val online = runCatching { Geocoder.search(query, 6, near?.lat, near?.lon) }
+            .getOrDefault(emptyList())
+            .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
+        val seen = mutableSetOf<String>()
+        return (local + hist + online).filter { seen.add(it.label.lowercase()) }.take(8)
     }
 
     /** Pick a suggestion → preview a route to it (using its coords, or re-geocoding a history hit). */
@@ -326,6 +361,8 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         pendingFix = fix
         pendingRoute = route
         resetGuidanceTrackers()
+        val typed = _state.value.query.ifBlank { name }
+        val near = _location.value
         _state.value = _state.value.copy(
             busy = false,
             notice = null,
@@ -338,6 +375,17 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             destName = name,
             previewing = true,
         )
+        // Cache the chosen place offline + log the choice (detached, best-effort).
+        viewModelScope.launch {
+            runCatching { PlacesRepo.save(getApplication(), name, lat, lon) }
+            runCatching {
+                trips.logSearch(
+                    query = typed, results = null,
+                    chosenLabel = name, chosenLat = lat, chosenLon = lon,
+                    nearLat = near?.lat, nearLon = near?.lon,
+                )
+            }
+        }
     }
 
     /** Resume a past drive (tapped in history): preview a route to that named destination. */

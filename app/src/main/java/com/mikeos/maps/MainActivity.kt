@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -35,6 +37,7 @@ import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Straight
 import androidx.compose.material.icons.filled.TurnLeft
 import androidx.compose.material.icons.filled.TurnRight
@@ -69,6 +72,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -256,10 +260,8 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             MenuSheet(
                 state = state,
                 onQueryChange = vm::onQueryChange,
-                onPreview = {
-                    vm.preview()
-                    menuOpen = false
-                },
+                // Search shows a choosable list — it does NOT route; the menu stays open.
+                onSearch = { vm.search() },
                 onResume = { name ->
                     vm.previewDestination(name)
                     menuOpen = false
@@ -440,7 +442,7 @@ private fun NoticePill(text: String) {
 private fun MenuSheet(
     state: MapsState,
     onQueryChange: (String) -> Unit,
-    onPreview: () -> Unit,
+    onSearch: () -> Unit,
     onResume: (String) -> Unit,
     onChoose: (Suggestion) -> Unit,
 ) {
@@ -463,6 +465,8 @@ private fun MenuSheet(
                 placeholder = { Text("Where to?", color = MikeMuted) },
                 shape = RoundedCornerShape(14.dp),
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSearch() }),
                 trailingIcon = {
                     if (state.query.isNotEmpty()) {
                         IconButton(onClick = { onQueryChange("") }) {
@@ -473,13 +477,13 @@ private fun MenuSheet(
             )
             Spacer(Modifier.size(10.dp))
             Button(
-                onClick = onPreview,
+                onClick = onSearch,
                 enabled = !state.busy,
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = MikeAccent, contentColor = MikeBg),
             ) {
                 if (state.busy) CircularProgressIndicator(Modifier.size(16.dp), color = MikeBg, strokeWidth = 2.dp)
-                else { Icon(Icons.Filled.PlayArrow, contentDescription = null); Text("Preview", fontWeight = FontWeight.Bold) }
+                else { Icon(Icons.Filled.Search, contentDescription = null); Text("Search", fontWeight = FontWeight.Bold) }
             }
         }
 

@@ -29,12 +29,33 @@ object Geocoder {
         .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
-    /** Type-ahead: up to [limit] candidate places for a partial query. Empty on failure. */
-    suspend fun search(query: String, limit: Int = 5): List<Place> = withContext(Dispatchers.IO) {
+    /**
+     * Type-ahead: up to [limit] candidate places. When [nearLat]/[nearLon] are given, results are
+     * first BIASED to a ~330 km box around the user (so "Villefranche" near Nice wins over the one
+     * in Canada); only if that finds nothing do we fall back to a worldwide search. Empty on failure.
+     */
+    suspend fun search(
+        query: String,
+        limit: Int = 6,
+        nearLat: Double? = null,
+        nearLon: Double? = null,
+    ): List<Place> = withContext(Dispatchers.IO) {
         val q = query.trim()
         if (q.isBlank()) return@withContext emptyList()
-        val url = "https://nominatim.openstreetmap.org/search?q=" +
-            URLEncoder.encode(q, "UTF-8") + "&format=json&limit=$limit"
+        val enc = URLEncoder.encode(q, "UTF-8")
+        if (nearLat != null && nearLon != null) {
+            val d = 3.0   // ~330 km each way
+            val viewbox = "${nearLon - d},${nearLat + d},${nearLon + d},${nearLat - d}"
+            val local = run(
+                "https://nominatim.openstreetmap.org/search?q=$enc&format=json&limit=$limit" +
+                    "&viewbox=$viewbox&bounded=1"
+            )
+            if (local.isNotEmpty()) return@withContext local
+        }
+        run("https://nominatim.openstreetmap.org/search?q=$enc&format=json&limit=$limit")
+    }
+
+    private suspend fun run(url: String): List<Place> = withContext(Dispatchers.IO) {
         val req = Request.Builder()
             .url(url)
             .header("User-Agent", UA)

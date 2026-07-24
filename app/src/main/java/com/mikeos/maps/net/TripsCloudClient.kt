@@ -364,6 +364,39 @@ class TripsCloudClient(
         }
     }
 
+    /** Log a destination search (query + result count + chosen place + where he was). Best-effort. */
+    suspend fun logSearch(
+        apiKey: String,
+        query: String,
+        results: Int?,
+        chosenLabel: String?,
+        chosenLat: Double?,
+        chosenLon: Double?,
+        nearLat: Double?,
+        nearLon: Double?,
+    ) = withContext(Dispatchers.IO) {
+        val payload = JSONObject()
+            .put("query", query)
+            .apply {
+                results?.let { put("results", it) }
+                chosenLabel?.let { put("chosen_label", it) }
+                chosenLat?.let { put("chosen_lat", it) }
+                chosenLon?.let { put("chosen_lon", it) }
+                nearLat?.let { put("near_lat", it) }
+                nearLon?.let { put("near_lon", it) }
+            }
+            .put("ts", Instant.now().toString())
+            .toString().toRequestBody(jsonMedia)
+        try {
+            client.newCall(keyed(apiKey, "/api/searches").post(payload).build()).execute().use { resp ->
+                if (!resp.isSuccessful) Log.w(TAG, "logSearch HTTP ${resp.code}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "logSearch failed: ${e.message}")
+        }
+        Unit
+    }
+
     private fun parseTrip(o: JSONObject): Trip = Trip(
         tripId = o.optString("trip_id").ifBlank { o.optString("id") },
         destName = o.str("dest_name"),
