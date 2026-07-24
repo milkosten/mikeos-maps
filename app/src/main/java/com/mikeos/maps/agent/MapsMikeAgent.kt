@@ -71,10 +71,10 @@ object MapsMikeAgent {
         // trip.progress — no LLM decision required. The returned string is the perception the
         // brain sees.
         HeartbeatService.perceptionProvider = {
+            // NOTE: trail sampling is now driven by TripManager's 5s sampler (started on start_trip),
+            // NOT here — so the 60s beat just REPORTS the live trip status for the brain to reason on.
             val a = trips.active.value
             if (a != null) {
-                runCatching { trips.beatSample() }
-                    .onFailure { Log.w(TAG, "beatSample failed: ${it.message}") }
                 val cur = trips.active.value
                 if (cur != null) {
                     "Active trip to ${cur.destName}: ${"%.1f".format(cur.km)} km planned, " +

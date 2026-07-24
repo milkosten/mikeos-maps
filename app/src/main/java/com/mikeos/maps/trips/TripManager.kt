@@ -8,9 +8,16 @@ import com.mikeos.maps.BuildConfig
 import com.mikeos.maps.net.DaemonLocation
 import com.mikeos.maps.net.Geocoder
 import com.mikeos.maps.net.TripsCloudClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
@@ -60,6 +67,12 @@ class TripManager private constructor(private val appContext: Context) {
 
     // Serialize lifecycle transitions so a heartbeat sample can't race start/end.
     private val lock = Mutex()
+
+    // High-cadence (5s) sampler: while a trip is active it reads the daemon fix and posts to
+    // trips-cloud every 5s (12×/min) so we bank fine-grained speed data for the congestion model.
+    // Replaces the old once-per-60s-beat sampling. Runs on its own scope for the trip's lifetime.
+    private val samplerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var samplerJob: Job? = null
 
     // trip.progress throttle — broadcast at most ~once/60s.
     @Volatile private var lastProgressBroadcastMs = 0L
@@ -124,6 +137,9 @@ class TripManager private constructor(private val appContext: Context) {
         )
         Log.i(TAG, "trip started: $tripId -> $destName (${route.km} km, ${route.etaMin} min)")
 
+        // Kick off the 5s cloud sampler (samples immediately, then every 5s until the trip ends).
+        startSampler()
+
         // Broadcast trip.started so Guide/Storyteller/Sound react.
         broadcast(
             "trip.started",
@@ -180,6 +196,23 @@ class TripManager private constructor(private val appContext: Context) {
         // lifecycle stays on the hive via trip.started / trip.ended only.
     }
 
+    /** Start the 5s sampler loop: sample now, then every [SAMPLE_INTERVAL_MS] while the trip lives. */
+    private fun startSampler() {
+        samplerJob?.cancel()
+        samplerJob = samplerScope.launch {
+            while (isActive && _active.value != null) {
+                runCatching { beatSample() }.onFailure { Log.w(TAG, "sampler tick failed: ${it.message}") }
+                delay(SAMPLE_INTERVAL_MS)
+            }
+        }
+    }
+
+    /** Stop the 5s sampler (trip ending / ended). */
+    private fun stopSampler() {
+        samplerJob?.cancel()
+        samplerJob = null
+    }
+
     // ---- END -------------------------------------------------------------------------------
 
     /**
@@ -188,6 +221,7 @@ class TripManager private constructor(private val appContext: Context) {
      */
     suspend fun endTrip(): TripsCloudClient.TripSummary? = lock.withLock {
         val current = _active.value ?: return null
+        stopSampler()
         val key = apiKey() ?: run { _active.value = null; return null }
         val avg = if (speedCount > 0) speedSum / speedCount else null
         val summary = cloud.endTrip(key, current.tripId, avgKmh = avg)
@@ -252,6 +286,7 @@ class TripManager private constructor(private val appContext: Context) {
     companion object {
         private const val TAG = "TripManager"
         private const val PROGRESS_THROTTLE_MS = 60_000L
+        private const val SAMPLE_INTERVAL_MS = 5_000L   // 5s high-cadence cloud sampling while driving
 
         @Volatile private var instance: TripManager? = null
         fun get(context: Context): TripManager =
