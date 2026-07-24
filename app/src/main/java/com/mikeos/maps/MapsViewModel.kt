@@ -3,7 +3,11 @@ package com.mikeos.maps
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.mikeos.maps.nav.Guidance
+import com.mikeos.maps.nav.NavGeo
+import com.mikeos.maps.nav.NavGuidance
 import com.mikeos.maps.nav.NavInfo
+import com.mikeos.maps.nav.Speaker
 import com.mikeos.maps.net.DaemonLocation
 import com.mikeos.maps.net.Geocoder
 import com.mikeos.maps.net.OfflinePrefetch
@@ -28,6 +32,8 @@ data class MapsState(
     val routeKm: Double? = null,
     val routeEtaMin: Double? = null,
     val destName: String? = null,
+    // Turn-by-turn maneuvers for the current route (empty until steps arrive).
+    val routeSteps: List<TripsCloudClient.RouteStep> = emptyList(),
     // A route has been computed + framed but the trip hasn't started yet (preview → Start).
     val previewing: Boolean = false,
     val history: List<TripsCloudClient.Trip> = emptyList(),
@@ -51,12 +57,22 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     private val _navInfo = MutableStateFlow<NavInfo?>(null)
     val navInfo: StateFlow<NavInfo?> = _navInfo.asStateFlow()
 
+    /** The live turn-by-turn guidance (next maneuver); null when not navigating. */
+    private val _guidance = MutableStateFlow<Guidance?>(null)
+    val guidance: StateFlow<Guidance?> = _guidance.asStateFlow()
+
     private var locationJob: Job? = null
 
     // A previewed-but-not-started route (see [preview] → [startPreviewed] / [cancelPreview]).
     private var pendingPlace: Geocoder.Place? = null
     private var pendingFix: DaemonLocation.Fix? = null
     private var pendingRoute: TripsCloudClient.Route? = null
+
+    // Turn-by-turn tracking, reset whenever the route changes.
+    private var maneuverIdx = 0
+    private var offRouteTicks = 0
+    private var arrived = false
+    @Volatile private var rerouting = false
 
     init {
         loadHistory()
@@ -67,6 +83,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     /** Begin polling the daemon fix (~every [LOCATION_POLL_MS]) while the map is visible. */
     fun startLiveLocation() {
         if (locationJob?.isActive == true) return
+        Speaker.init(getApplication())
         locationJob = viewModelScope.launch {
             while (isActive) {
                 val fix = trips.currentFix()
@@ -89,10 +106,74 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     private fun recomputeNav(fix: DaemonLocation.Fix) {
         val a = active.value
         val pts = _state.value.routePoints
-        _navInfo.value =
-            if (a != null && pts.size >= 2)
-                NavInfo.compute(fix.speedKmh, pts, fix.lat, fix.lon, a.km, a.etaMin)
-            else null
+        if (a == null || pts.size < 2) {
+            _navInfo.value = null
+            _guidance.value = null
+            return
+        }
+        _navInfo.value = NavInfo.compute(fix.speedKmh, pts, fix.lat, fix.lon, a.km, a.etaMin)
+
+        // Turn-by-turn: advance to the next maneuver ahead.
+        val steps = _state.value.routeSteps
+        if (steps.isNotEmpty()) {
+            NavGuidance.next(steps, maneuverIdx, fix.lat, fix.lon)?.let { (g, idx) ->
+                _guidance.value = g
+                maneuverIdx = idx
+                Speaker.announce(g)
+            }
+        }
+
+        // Arrival: auto-end once within ARRIVE_M of the destination.
+        val toDestM = NavGeo.haversineKm(fix.lat, fix.lon, a.destLat, a.destLon) * 1000.0
+        if (!arrived && toDestM < ARRIVE_M) {
+            arrived = true
+            _state.value = _state.value.copy(notice = "Arrived at ${a.destName}.")
+            endTrip()
+            return
+        }
+
+        // Off-route: reroute after a couple of ticks clearly off the line.
+        val offM = NavGeo.nearestKm(pts, fix.lat, fix.lon) * 1000.0
+        if (offM > OFF_ROUTE_M) {
+            offRouteTicks++
+            if (offRouteTicks >= 2) reroute(fix.lat, fix.lon, a)
+        } else {
+            offRouteTicks = 0
+        }
+    }
+
+    /** Recompute the route from the current position to the destination (same trip keeps recording). */
+    private fun reroute(curLat: Double, curLon: Double, a: TripManager.ActiveTrip) {
+        if (rerouting) return
+        rerouting = true
+        viewModelScope.launch {
+            val r = trips.route(curLat, curLon, a.destLat, a.destLon)
+            if (r != null) {
+                val pts = runCatching { PolylineCodec.decode(r.polyline) }.getOrDefault(emptyList())
+                maneuverIdx = 0
+                offRouteTicks = 0
+                _state.value = _state.value.copy(
+                    routePoints = pts,
+                    routeSteps = r.steps,
+                    routeKm = r.km,
+                    routeEtaMin = r.etaMin,
+                    notice = "Rerouting…",
+                )
+            }
+            rerouting = false
+        }
+    }
+
+    private fun resetGuidanceTrackers() {
+        maneuverIdx = 0
+        offRouteTicks = 0
+        arrived = false
+        Speaker.reset()
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        Speaker.shutdown()
     }
 
     fun onQueryChange(q: String) {
@@ -137,10 +218,12 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             pendingPlace = place
             pendingFix = fix
             pendingRoute = route
+            resetGuidanceTrackers()
             _state.value = _state.value.copy(
                 busy = false,
                 notice = null,
                 routePoints = points,
+                routeSteps = route.steps,
                 routeKm = route.km,
                 routeEtaMin = route.etaMin,
                 destName = place.name,
@@ -158,6 +241,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(notice = "Nothing to start — preview a destination first.")
             return
         }
+        resetGuidanceTrackers()
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true, notice = "Starting trip…", previewing = false)
             val id = trips.startTrip(place.name, place.lat, place.lon, fix.lat, fix.lon, route)
@@ -172,9 +256,11 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     /** Discard the previewed route (back to the map). */
     fun cancelPreview() {
         pendingPlace = null; pendingFix = null; pendingRoute = null
+        _guidance.value = null
         _state.value = _state.value.copy(
             previewing = false,
             routePoints = emptyList(),
+            routeSteps = emptyList(),
             routeKm = null,
             routeEtaMin = null,
             destName = null,
@@ -192,11 +278,13 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
                 notice = if (s != null) "Trip ended: ${"%.0f".format(s.durationMin)} min, ${s.sampleCount} samples." else "Ended locally (cloud unconfirmed).",
                 // Clear the route from the map once the trip is done.
                 routePoints = emptyList(),
+                routeSteps = emptyList(),
                 routeKm = null,
                 routeEtaMin = null,
                 destName = null,
             )
             _navInfo.value = null
+            _guidance.value = null
             loadHistory()
         }
     }
@@ -210,5 +298,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val LOCATION_POLL_MS = 3_000L
+        private const val ARRIVE_M = 40.0      // auto-end the trip within this of the destination
+        private const val OFF_ROUTE_M = 60.0   // reroute when this far off the route line
     }
 }

@@ -58,6 +58,17 @@ object NavGeo {
         return r * 2 * atan2(sqrt(a), sqrt(1 - a))
     }
 
+    /** Distance (km) to the nearest vertex of [route] — used for off-route detection. */
+    fun nearestKm(route: List<PolylineCodec.LatLon>, curLat: Double, curLon: Double): Double {
+        if (route.isEmpty()) return Double.MAX_VALUE
+        var best = Double.MAX_VALUE
+        for (p in route) {
+            val d = haversineKm(curLat, curLon, p.lat, p.lon)
+            if (d < best) best = d
+        }
+        return best
+    }
+
     /**
      * Remaining route distance (km) from the current position to the end of [route]: snap to the
      * nearest route vertex, then sum the segment lengths from there onward (plus the hop from the

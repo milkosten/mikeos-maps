@@ -12,7 +12,7 @@ tell stories (MikeStoryteller) — it announces the trip on the hive (`trip.star
 / `trip.ended`) and lets them react.
 
 **Type:** MikeOS **Android app** (app-agent). Package / applicationId **`com.mikeos.maps`**
-(namespace `com.mikeos.maps`), versionCode **3**, versionName **0.3.0-mapfirst**.
+(namespace `com.mikeos.maps`), versionCode **4**, versionName **0.4.0-turnbyturn**.
 
 **Map-first UX (like Google Maps):** the app opens straight onto a **full-screen OSM map**
 (MapLibre GL Native, self-hosted **`mikeos-basemap`** — `$BASEMAP_URL/style.json`, a Protomaps planet
@@ -37,7 +37,11 @@ Vision: *the one navigation surface that's map-first and quietly learns Mike's r
 - **Route preview** ✅ — search → the whole route framed on the map with distance / drive-time / ETA
   → **Start** (Google-Maps flow), or Cancel. `MapsViewModel.preview()/startPreviewed()/cancelPreview()`,
   `RoutePreviewPanel`; the map frames the route while `!follow`, then follows the dot on Start.
-- Next: turn-by-turn guidance, congestion overlay on the map, heading/bearing on the puck.
+- **P6 Turn-by-turn** ✅ — trips-cloud `/api/route` now returns OSRM `steps`; the app shows a maneuver
+  banner (arrow + "In 300 m, turn left onto X"), speaks prompts on-device (`nav/Speaker`, free TTS),
+  detects off-route → reroutes, and auto-ends on arrival. `nav/Guidance` + guidance tracking in the VM.
+- Next: **P7 congestion overlay** (color roads by learned speed; time-aware ETA), heading/bearing puck,
+  turn-lane detail, background navigation.
 
 ## Build & install
 

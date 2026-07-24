@@ -26,9 +26,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Straight
+import androidx.compose.material.icons.filled.TurnLeft
+import androidx.compose.material.icons.filled.TurnRight
+import androidx.compose.material.icons.filled.TurnSlightLeft
+import androidx.compose.material.icons.filled.TurnSlightRight
+import androidx.compose.material.icons.filled.UTurnLeft
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -52,6 +60,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -60,6 +69,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mikeos.core.runtime.HeartbeatService
 import com.mikeos.maps.agent.MapsMikeAgent
+import com.mikeos.maps.nav.Guidance
+import com.mikeos.maps.nav.ManeuverKind
 import com.mikeos.maps.nav.NavFormat
 import com.mikeos.maps.nav.NavInfo
 import com.mikeos.maps.net.DaemonLocation
@@ -122,6 +133,7 @@ private fun MapFirstScreen(vm: MapsViewModel) {
     val active by vm.active.collectAsStateWithLifecycle()
     val location by vm.location.collectAsStateWithLifecycle()
     val navInfo by vm.navInfo.collectAsStateWithLifecycle()
+    val guidance by vm.guidance.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     var follow by remember { mutableStateOf(true) }
@@ -149,21 +161,27 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Top overlay: ☰ menu (search + options) and the mandatory agent window.
-        Row(
+        // Top overlay: the turn-by-turn banner while navigating, else the ☰ menu + agent window.
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
                 .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
         ) {
-            CircleButton(onClick = { menuOpen = true }) {
-                Icon(Icons.Filled.Menu, contentDescription = "Menu", tint = MikeOnSurface)
+            val g = guidance
+            if (active != null && g != null) {
+                ManeuverBanner(g)
+            } else {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    CircleButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Menu", tint = MikeOnSurface)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    com.mikeos.core.ui.AgentIconButton(
+                        onClick = { com.mikeos.core.ui.AgentInspectorActivity.start(context) }
+                    )
+                }
             }
-            Spacer(Modifier.weight(1f))
-            com.mikeos.core.ui.AgentIconButton(
-                onClick = { com.mikeos.core.ui.AgentInspectorActivity.start(context) }
-            )
         }
 
         // Bottom overlay: driving HUD while navigating, else a slim "Where to?" bar.
@@ -220,6 +238,43 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             )
         }
     }
+}
+
+// ---- Turn-by-turn banner -------------------------------------------------------------------
+
+@Composable
+private fun ManeuverBanner(g: Guidance) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MikeAccent),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(maneuverIcon(g.kind), contentDescription = null, tint = MikeBg, modifier = Modifier.size(40.dp))
+            Spacer(Modifier.size(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    NavFormat.distance(g.distanceM / 1000.0),
+                    color = MikeBg, fontSize = 24.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
+                )
+                Text(g.instruction, color = MikeBg, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 2)
+            }
+        }
+    }
+}
+
+private fun maneuverIcon(kind: ManeuverKind): ImageVector = when (kind) {
+    ManeuverKind.DEPART -> Icons.Filled.Navigation
+    ManeuverKind.ARRIVE -> Icons.Filled.Flag
+    ManeuverKind.LEFT, ManeuverKind.SHARP_LEFT -> Icons.Filled.TurnLeft
+    ManeuverKind.SLIGHT_LEFT -> Icons.Filled.TurnSlightLeft
+    ManeuverKind.RIGHT, ManeuverKind.SHARP_RIGHT -> Icons.Filled.TurnRight
+    ManeuverKind.SLIGHT_RIGHT -> Icons.Filled.TurnSlightRight
+    ManeuverKind.UTURN -> Icons.Filled.UTurnLeft
+    ManeuverKind.STRAIGHT, ManeuverKind.MERGE, ManeuverKind.FORK, ManeuverKind.ROUNDABOUT -> Icons.Filled.Straight
 }
 
 // ---- Bottom panels -------------------------------------------------------------------------
