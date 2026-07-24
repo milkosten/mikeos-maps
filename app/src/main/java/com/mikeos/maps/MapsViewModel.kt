@@ -232,6 +232,12 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Resume a past drive (tapped in history): preview a route to that named destination. */
+    fun previewDestination(dest: String) {
+        _state.value = _state.value.copy(query = dest)
+        preview()
+    }
+
     /** START the previewed trip (create in cloud + broadcast trip.started + start the 5s sampler). */
     fun startPreviewed() {
         val place = pendingPlace

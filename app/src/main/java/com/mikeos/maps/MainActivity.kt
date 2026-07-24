@@ -236,6 +236,10 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                     vm.preview()
                     menuOpen = false
                 },
+                onResume = { name ->
+                    vm.previewDestination(name)
+                    menuOpen = false
+                },
             )
         }
     }
@@ -407,6 +411,7 @@ private fun MenuSheet(
     state: MapsState,
     onQueryChange: (String) -> Unit,
     onPreview: () -> Unit,
+    onResume: (String) -> Unit,
 ) {
     Column(
         Modifier
@@ -447,7 +452,11 @@ private fun MenuSheet(
         if (state.history.isEmpty()) {
             Text("No trips yet. Route somewhere to start recording.", color = MikeMuted, fontSize = 13.sp)
         } else {
-            state.history.forEach { t -> TripRow(t) }
+            Text("Tap a trip to drive it again.", color = MikeMuted, fontSize = 11.sp)
+            Spacer(Modifier.height(4.dp))
+            state.history.forEach { t ->
+                TripRow(t, onClick = { t.destName?.let { onResume(it) } })
+            }
         }
     }
 }
@@ -481,9 +490,13 @@ private fun Metric(value: String, label: String, hero: Boolean = false) {
 }
 
 @Composable
-private fun TripRow(t: TripsCloudClient.Trip) {
+private fun TripRow(t: TripsCloudClient.Trip, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 10.dp, horizontal = 2.dp),
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -502,5 +515,8 @@ private fun TripRow(t: TripsCloudClient.Trip) {
         t.durationMin?.let {
             Text("${"%.0f".format(it)} min", color = MikeMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
         }
+        // Tap affordance — drive this destination again.
+        Spacer(Modifier.size(10.dp))
+        Icon(Icons.Filled.PlayArrow, contentDescription = "Drive again", tint = MikeAccent, modifier = Modifier.size(20.dp))
     }
 }
