@@ -43,6 +43,13 @@ android {
             "\"https://mikeos-basemap-production.up.railway.app\""
         )
 
+        // mikeos-osm: our self-hosted planet OSM stack (Nominatim geocode + Overpass POI), behind
+        // a Bearer-token gateway. Defaults to the PUBLIC services so the app works until we flip;
+        // the G1 cutover = point these at https://osm.osmike.com/{nominatim,overpass} + set the token.
+        buildConfigField("String", "NOMINATIM_URL", "\"https://nominatim.openstreetmap.org\"")
+        buildConfigField("String", "OVERPASS_URL", "\"https://overpass-api.de\"")
+        buildConfigField("String", "OSM_TOKEN", "\"\"")   // Bearer token; empty = no auth header (public)
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // MapLibre ships native .so per ABI. Real MikeOS phones are ARM, and these APKs go OTA

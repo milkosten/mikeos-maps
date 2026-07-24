@@ -1,6 +1,7 @@
 package com.mikeos.maps.net
 
 import android.util.Log
+import com.mikeos.maps.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
@@ -22,7 +23,7 @@ object PoiSearch {
 
     private const val TAG = "PoiSearch"
     private const val UA = "MikeMaps/0.1 (MikeOS navigation agent; mikaelwestoo@gmail.com)"
-    private const val ENDPOINT = "https://overpass-api.de/api/interpreter"
+    private val ENDPOINT = "${BuildConfig.OVERPASS_URL}/api/interpreter"
     private const val RADIUS_M = 60_000   // 60 km proximity radius for named POIs
 
     private val client: OkHttpClient = OkHttpClient.Builder()
@@ -69,6 +70,7 @@ object PoiSearch {
         val req = Request.Builder()
             .url(ENDPOINT)
             .header("User-Agent", UA)
+            .apply { if (BuildConfig.OSM_TOKEN.isNotBlank()) header("Authorization", "Bearer ${BuildConfig.OSM_TOKEN}") }
             .post(FormBody.Builder().add("data", ql).build())
             .build()
         try {

@@ -1,6 +1,7 @@
 package com.mikeos.maps.net
 
 import android.util.Log
+import com.mikeos.maps.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -47,12 +48,12 @@ object Geocoder {
             val d = 1.5   // ~165 km box — local trips; farther places fall through to worldwide below
             val viewbox = "${nearLon - d},${nearLat + d},${nearLon + d},${nearLat - d}"
             val local = run(
-                "https://nominatim.openstreetmap.org/search?q=$enc&format=json&limit=$limit" +
+                "${BuildConfig.NOMINATIM_URL}/search?q=$enc&format=json&limit=$limit" +
                     "&viewbox=$viewbox&bounded=1"
             )
             if (local.isNotEmpty()) return@withContext local
         }
-        run("https://nominatim.openstreetmap.org/search?q=$enc&format=json&limit=$limit")
+        run("${BuildConfig.NOMINATIM_URL}/search?q=$enc&format=json&limit=$limit")
     }
 
     private suspend fun run(url: String): List<Place> = withContext(Dispatchers.IO) {
@@ -60,6 +61,7 @@ object Geocoder {
             .url(url)
             .header("User-Agent", UA)
             .header("Accept", "application/json")
+            .apply { if (BuildConfig.OSM_TOKEN.isNotBlank()) header("Authorization", "Bearer ${BuildConfig.OSM_TOKEN}") }
             .get()
             .build()
         try {
@@ -85,12 +87,13 @@ object Geocoder {
     suspend fun geocode(query: String): Place? = withContext(Dispatchers.IO) {
         val q = query.trim()
         if (q.isBlank()) return@withContext null
-        val url = "https://nominatim.openstreetmap.org/search?q=" +
+        val url = "${BuildConfig.NOMINATIM_URL}/search?q=" +
             URLEncoder.encode(q, "UTF-8") + "&format=json&limit=1"
         val req = Request.Builder()
             .url(url)
             .header("User-Agent", UA)
             .header("Accept", "application/json")
+            .apply { if (BuildConfig.OSM_TOKEN.isNotBlank()) header("Authorization", "Bearer ${BuildConfig.OSM_TOKEN}") }
             .get()
             .build()
         try {
