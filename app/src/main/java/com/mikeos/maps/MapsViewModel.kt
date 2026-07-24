@@ -12,6 +12,7 @@ import com.mikeos.maps.nav.Speaker
 import com.mikeos.maps.net.DaemonLocation
 import com.mikeos.maps.net.Geocoder
 import com.mikeos.maps.net.OfflinePrefetch
+import com.mikeos.maps.net.PoiSearch
 import com.mikeos.maps.net.PolylineCodec
 import com.mikeos.maps.net.TripsCloudClient
 import com.mikeos.maps.trips.TripManager
@@ -260,7 +261,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         suggestJob?.cancel()
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true, notice = null)
-            val results = suggestFor(q)
+            val results = suggestFor(q, includePoi = true)
             _state.value = _state.value.copy(
                 busy = false,
                 suggestions = results,
@@ -271,8 +272,12 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Build suggestions: 1) offline fuzzy cache, 2) cloud-history names, 3) location-biased geocoder. */
-    private suspend fun suggestFor(query: String): List<Suggestion> {
+    /**
+     * Build suggestions: 1) offline fuzzy cache, 2) cloud-history names, 3) named POIs (Overpass —
+     * only when [includePoi], i.e. the explicit Search, since it's heavier), 4) location-biased
+     * geocoder. Deduped by the SHORT name so 3× "Avenue de l'Ange Gardien" collapses to one.
+     */
+    private suspend fun suggestFor(query: String, includePoi: Boolean = false): List<Suggestion> {
         val near = _location.value
         val local = runCatching { PlacesRepo.search(getApplication(), query, 5) }
             .getOrDefault(emptyList())
@@ -283,11 +288,16 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             .distinct()
             .take(2)
             .map { Suggestion(it, null, null, fromHistory = true) }
+        val poi = if (includePoi && near != null) {
+            runCatching { PoiSearch.search(query, near.lat, near.lon, 6) }.getOrDefault(emptyList())
+                .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
+        } else emptyList()
         val online = runCatching { Geocoder.search(query, 6, near?.lat, near?.lon) }
             .getOrDefault(emptyList())
             .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
         val seen = mutableSetOf<String>()
-        return (local + hist + online).filter { seen.add(it.label.lowercase()) }.take(8)
+        fun shortKey(s: Suggestion) = s.label.substringBefore(",").trim().lowercase()
+        return (local + hist + poi + online).filter { seen.add(shortKey(it)) }.take(8)
     }
 
     /** Pick a suggestion → preview a route to it (using its coords, or re-geocoding a history hit). */
