@@ -14,8 +14,8 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.0-maps"
+        versionCode = 3
+        versionName = "0.2.0-basemap"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
         buildConfigField("String", "DAEMON_BASE_URL", "\"https://127.0.0.1:7743\"")
@@ -34,7 +34,23 @@ android {
             "\"https://mikeos-trips-cloud-production.up.railway.app\""
         )
 
+        // mikeos-basemap: self-hosted OSM vector basemap (MapLibre style + planet tiles). The app
+        // loads "$BASEMAP_URL/style.json". Update this to the deployed Railway domain once the
+        // basemap service is live (see the mikeos-basemap repo). Valid public TLS + DoH.
+        buildConfigField(
+            "String",
+            "BASEMAP_URL",
+            "\"https://mikeos-basemap-production.up.railway.app\""
+        )
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // MapLibre ships native .so per ABI. Real MikeOS phones are ARM, and these APKs go OTA
+        // over cellular (mikeos-appstore) — so drop the x86/x86_64 emulator libs to ~halve the
+        // download. arm64-v8a covers modern devices; armeabi-v7a keeps older 32-bit ones working.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -80,6 +96,11 @@ dependencies {
 
     // Background heartbeat
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    // MapLibre GL Native — the FOSS vector map engine (renders the mikeos-basemap OSM tiles as a
+    // real map under the route). Its HTTP stack is pointed at our DoH client so tiles resolve on
+    // this flaky-DNS ROM (see MapLibreRouteMap).
+    implementation("org.maplibre.gl:android-sdk:11.8.0")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // DNS-over-HTTPS: resolve cloud hostnames via Cloudflare even when the phone's

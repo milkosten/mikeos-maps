@@ -16,7 +16,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -416,7 +418,40 @@ class MikeAgent internal constructor(
         private const val INTERESTS_TTL_MS = 10 * 60_000L
         /** The universal skills the runtime adds to every agent (excluded from announces). */
         private val UNIVERSAL_SKILL_NAMES =
-            setOf("hive_send", "remember", "recall", "notify", "ask_siblings")
+            setOf("location", "hive_send", "remember", "recall", "notify", "ask_siblings")
+
+        /**
+         * Read the user's CURRENT location from the daemon's single shared fix
+         * (`GET {daemon}/api/location`, an auth-exempt loopback endpoint — the one location
+         * authority; apps must NOT run their own GPS or ask a sibling). Returns a concise
+         * `lat=…, lon=…, city=…` string, or a clear "unavailable" reason. Never throws.
+         */
+        private suspend fun readDaemonLocation(client: OkHttpClient, baseUrl: String): String =
+            withContext(Dispatchers.IO) {
+                try {
+                    val req = Request.Builder().url("$baseUrl/api/location").get().build()
+                    client.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) {
+                            return@withContext "location unavailable (daemon HTTP ${resp.code})"
+                        }
+                        val o = JSONObject(resp.body?.string().orEmpty())
+                        val lat = o.optDouble("lat", Double.NaN)
+                        val lon = o.optDouble("lon", Double.NaN)
+                        if (lat.isNaN() || lon.isNaN()) {
+                            return@withContext "location unavailable (no fix yet)"
+                        }
+                        val city = o.optString("city").ifBlank { o.optString("locality") }
+                        val stale = o.optBoolean("stale", false)
+                        buildString {
+                            append("lat=%.5f, lon=%.5f".format(lat, lon))
+                            if (city.isNotBlank()) append(", city=$city")
+                            if (stale) append(" (stale fix)")
+                        }
+                    }
+                } catch (e: Exception) {
+                    "location unavailable (${e.message})"
+                }
+            }
 
         @Volatile
         private var INSTANCE: MikeAgent? = null
@@ -474,6 +509,7 @@ class MikeAgent internal constructor(
                     else notes.joinToString("\n") { "- ${it.text}" }
                 },
                 notify = { text -> Notifier.alert(app, text) },
+                location = { readDaemonLocation(loopbackClient, config.daemonBaseUrl) },
                 siblings = config.siblings,
                 selfName = soul.agentName,
             )

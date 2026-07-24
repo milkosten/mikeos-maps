@@ -82,9 +82,18 @@ class SkillRegistry(skills: List<Skill> = emptyList()) {
             remember: suspend (note: String) -> String,
             recall: suspend (query: String) -> String,
             notify: suspend (text: String) -> String,
+            location: suspend () -> String,
             siblings: List<String> = emptyList(),
             selfName: String = "",
         ): List<Skill> = listOf(
+            Skill(
+                name = "location",
+                description = "The user's CURRENT location (lat, lon, city) from the device's ONE " +
+                    "shared GPS fix. Use this whenever you need where Mike is — it is a device fact, " +
+                    "not a sibling's data, so NEVER ask another agent for the location; call this.",
+                paramsSchema = "{}",
+                run = { _ -> location() },
+            ),
             Skill(
                 name = "hive_send",
                 description = "Message a sibling agent on the hive. Use proactively when you learn something a sibling would act on.",
