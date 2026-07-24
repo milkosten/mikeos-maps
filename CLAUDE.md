@@ -34,8 +34,10 @@ Vision: *the one navigation surface that's map-first and quietly learns Mike's r
 - **P3 5 s telemetry** ✅ — `TripManager` posts speed+loc to trips-cloud every 5 s while driving
   (decoupled from the 60 s heartbeat).
 - **P4 Offline prefetch** ✅ — `OfflinePrefetch` caches ~100 km around Mike, refreshed when he moves far.
-- Next: route-preview mode (see the whole route before you drive), turn-by-turn guidance, congestion
-  overlay on the map, heading/bearing on the puck.
+- **Route preview** ✅ — search → the whole route framed on the map with distance / drive-time / ETA
+  → **Start** (Google-Maps flow), or Cancel. `MapsViewModel.preview()/startPreviewed()/cancelPreview()`,
+  `RoutePreviewPanel`; the map frames the route while `!follow`, then follows the dot on Start.
+- Next: turn-by-turn guidance, congestion overlay on the map, heading/bearing on the puck.
 
 ## Build & install
 

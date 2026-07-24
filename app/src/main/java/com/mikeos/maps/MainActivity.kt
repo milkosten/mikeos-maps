@@ -46,6 +46,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -132,6 +133,11 @@ private fun MapFirstScreen(vm: MapsViewModel) {
         onDispose { vm.stopLiveLocation() }
     }
 
+    // Follow the dot everywhere EXCEPT while previewing a route (then we frame the whole route).
+    LaunchedEffect(state.previewing, active != null) {
+        follow = !state.previewing
+    }
+
     Box(Modifier.fillMaxSize().background(MikeBg)) {
 
         // THE MAP — the whole screen. Map-first.
@@ -185,10 +191,15 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             }
 
             val a = active
-            if (a != null) {
-                DrivingHud(a, navInfo, busy = state.busy, onEnd = { vm.endTrip() })
-            } else {
-                WhereToBar(location, onClick = { menuOpen = true })
+            when {
+                a != null -> DrivingHud(a, navInfo, busy = state.busy, onEnd = { vm.endTrip() })
+                state.previewing -> RoutePreviewPanel(
+                    state = state,
+                    busy = state.busy,
+                    onStart = { vm.startPreviewed() },
+                    onCancel = { vm.cancelPreview() },
+                )
+                else -> WhereToBar(location, onClick = { menuOpen = true })
             }
         }
     }
@@ -202,9 +213,8 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             MenuSheet(
                 state = state,
                 onQueryChange = vm::onQueryChange,
-                onGo = {
-                    vm.go()
-                    follow = true
+                onPreview = {
+                    vm.preview()
                     menuOpen = false
                 },
             )
@@ -256,6 +266,50 @@ private fun DrivingHud(
 }
 
 @Composable
+private fun RoutePreviewPanel(
+    state: MapsState,
+    busy: Boolean,
+    onStart: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MikeSurface),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Text("ROUTE", color = MikeAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Text(state.destName ?: "Destination", color = MikeOnSurface, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                state.routeKm?.let { Metric(NavFormat.distance(it), "distance") }
+                state.routeEtaMin?.let { Metric(NavFormat.duration(it), "drive") }
+                state.routeEtaMin?.let { Metric(NavFormat.eta(it), "arrival") }
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = onCancel,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MikeSurfaceVariant, contentColor = MikeOnSurface),
+                ) { Text("Cancel") }
+                Spacer(Modifier.size(10.dp))
+                Button(
+                    onClick = onStart,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MikeAccent, contentColor = MikeBg),
+                ) {
+                    if (busy) CircularProgressIndicator(Modifier.size(16.dp), color = MikeBg, strokeWidth = 2.dp)
+                    else Text("Start", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun WhereToBar(location: DaemonLocation.Fix?, onClick: () -> Unit) {
     Row(
         modifier = Modifier
@@ -296,7 +350,7 @@ private fun NoticePill(text: String) {
 private fun MenuSheet(
     state: MapsState,
     onQueryChange: (String) -> Unit,
-    onGo: () -> Unit,
+    onPreview: () -> Unit,
 ) {
     Column(
         Modifier
@@ -320,13 +374,13 @@ private fun MenuSheet(
             )
             Spacer(Modifier.size(10.dp))
             Button(
-                onClick = onGo,
+                onClick = onPreview,
                 enabled = !state.busy,
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = MikeAccent, contentColor = MikeBg),
             ) {
                 if (state.busy) CircularProgressIndicator(Modifier.size(16.dp), color = MikeBg, strokeWidth = 2.dp)
-                else { Icon(Icons.Filled.PlayArrow, contentDescription = null); Text("Go", fontWeight = FontWeight.Bold) }
+                else { Icon(Icons.Filled.PlayArrow, contentDescription = null); Text("Preview", fontWeight = FontWeight.Bold) }
             }
         }
 

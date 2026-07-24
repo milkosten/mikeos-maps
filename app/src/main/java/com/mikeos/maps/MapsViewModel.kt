@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mikeos.maps.nav.NavInfo
 import com.mikeos.maps.net.DaemonLocation
+import com.mikeos.maps.net.Geocoder
 import com.mikeos.maps.net.OfflinePrefetch
 import com.mikeos.maps.net.PolylineCodec
 import com.mikeos.maps.net.TripsCloudClient
@@ -27,6 +28,8 @@ data class MapsState(
     val routeKm: Double? = null,
     val routeEtaMin: Double? = null,
     val destName: String? = null,
+    // A route has been computed + framed but the trip hasn't started yet (preview → Start).
+    val previewing: Boolean = false,
     val history: List<TripsCloudClient.Trip> = emptyList(),
 )
 
@@ -49,6 +52,11 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     val navInfo: StateFlow<NavInfo?> = _navInfo.asStateFlow()
 
     private var locationJob: Job? = null
+
+    // A previewed-but-not-started route (see [preview] → [startPreviewed] / [cancelPreview]).
+    private var pendingPlace: Geocoder.Place? = null
+    private var pendingFix: DaemonLocation.Fix? = null
+    private var pendingRoute: TripsCloudClient.Route? = null
 
     init {
         loadHistory()
@@ -92,10 +100,11 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * "Go": geocode the destination → read the daemon fix → route → show it → START the trip
-     * (create + broadcast trip.started). All deterministic, wired directly (not via the LLM).
+     * PREVIEW: geocode the destination → read the daemon fix → route → FRAME it on the map. Stores
+     * the pending route but does NOT start the trip — the user confirms with [startPreviewed].
+     * (Google-Maps flow: search → see the route → Start.)
      */
-    fun go() {
+    fun preview() {
         val dest = _state.value.query.trim()
         if (dest.isBlank()) {
             _state.value = _state.value.copy(notice = "Type a destination first.")
@@ -125,20 +134,52 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             val points = runCatching { PolylineCodec.decode(route.polyline) }.getOrDefault(emptyList())
+            pendingPlace = place
+            pendingFix = fix
+            pendingRoute = route
             _state.value = _state.value.copy(
+                busy = false,
+                notice = null,
                 routePoints = points,
                 routeKm = route.km,
                 routeEtaMin = route.etaMin,
                 destName = place.name,
-                notice = "Starting trip…",
-            )
-            // START the trip (create in cloud + broadcast trip.started + start the 5s sampler).
-            val id = trips.startTrip(place.name, place.lat, place.lon, fix.lat, fix.lon, route)
-            _state.value = _state.value.copy(
-                busy = false,
-                notice = if (id != null) "Trip started — recording the drive." else "Trip created but the cloud didn't confirm it.",
+                previewing = true,
             )
         }
+    }
+
+    /** START the previewed trip (create in cloud + broadcast trip.started + start the 5s sampler). */
+    fun startPreviewed() {
+        val place = pendingPlace
+        val fix = pendingFix
+        val route = pendingRoute
+        if (place == null || fix == null || route == null) {
+            _state.value = _state.value.copy(notice = "Nothing to start — preview a destination first.")
+            return
+        }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true, notice = "Starting trip…", previewing = false)
+            val id = trips.startTrip(place.name, place.lat, place.lon, fix.lat, fix.lon, route)
+            pendingPlace = null; pendingFix = null; pendingRoute = null
+            _state.value = _state.value.copy(
+                busy = false,
+                notice = if (id != null) "Navigating — recording the drive." else "Trip created but the cloud didn't confirm it.",
+            )
+        }
+    }
+
+    /** Discard the previewed route (back to the map). */
+    fun cancelPreview() {
+        pendingPlace = null; pendingFix = null; pendingRoute = null
+        _state.value = _state.value.copy(
+            previewing = false,
+            routePoints = emptyList(),
+            routeKm = null,
+            routeEtaMin = null,
+            destName = null,
+            notice = null,
+        )
     }
 
     /** End the active trip (POST end + broadcast trip.ended). */

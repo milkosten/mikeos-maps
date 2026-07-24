@@ -135,8 +135,8 @@ private class NavMapHolder {
             centeredOnce = true
             val pos = CameraPosition.Builder().target(LatLng(loc.lat, loc.lon)).zoom(zoom).build()
             runCatching { m.easeCamera(CameraUpdateFactory.newCameraPosition(pos), CAMERA_MS) }
-        } else if (loc == null && points.size >= 2 && lastFittedRoute !== points) {
-            // No fix yet but we have a route — frame the route so the screen isn't empty.
+        } else if (!follow && points.size >= 2 && lastFittedRoute !== points) {
+            // Not following (route preview, or no fix yet) — frame the whole route once.
             val b = LatLngBounds.Builder()
             points.forEach { b.include(LatLng(it.lat, it.lon)) }
             runCatching { m.easeCamera(CameraUpdateFactory.newLatLngBounds(b.build(), FIT_PADDING_PX)) }
