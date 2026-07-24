@@ -63,8 +63,10 @@ object DaemonLocation {
                     Log.w(TAG, "location 200 but no lat/lon: $raw")
                     return@withContext null
                 }
-                // Daemon may give speed in m/s ("speed") or km/h ("speed_kmh"); prefer explicit km/h.
+                // Daemon may give speed in km/h ("speedKmh"/"speed_kmh") or m/s ("speed");
+                // prefer an explicit km/h field, else convert m/s.
                 val speedKmh: Double? = when {
+                    loc.has("speedKmh") && !loc.isNull("speedKmh") -> loc.optDouble("speedKmh").takeUnless { it.isNaN() }
                     loc.has("speed_kmh") && !loc.isNull("speed_kmh") -> loc.optDouble("speed_kmh").takeUnless { it.isNaN() }
                     loc.has("speed") && !loc.isNull("speed") -> loc.optDouble("speed").takeUnless { it.isNaN() }?.let { it * 3.6 }
                     else -> null
