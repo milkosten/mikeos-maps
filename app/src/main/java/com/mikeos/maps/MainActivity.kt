@@ -70,9 +70,11 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -444,6 +446,15 @@ private fun MenuSheet(
     onResume: (String) -> Unit,
     onChoose: (Suggestion) -> Unit,
 ) {
+    // Hold the field's text + CURSOR locally (TextFieldValue). Binding the field's value directly to
+    // the VM's async StateFlow made the cursor jump on every suggestion update — this keeps it put.
+    var field by remember { mutableStateOf(TextFieldValue(state.query, TextRange(state.query.length))) }
+    // Reflect only EXTERNAL query changes (after choosing / ending clears it) — not our own keystrokes.
+    LaunchedEffect(state.query) {
+        if (state.query != field.text) {
+            field = TextFieldValue(state.query, TextRange(state.query.length))
+        }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -457,8 +468,11 @@ private fun MenuSheet(
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
-                value = state.query,
-                onValueChange = onQueryChange,
+                value = field,
+                onValueChange = {
+                    field = it
+                    onQueryChange(it.text)
+                },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Where to?", color = MikeMuted) },
                 shape = RoundedCornerShape(14.dp),
@@ -466,8 +480,11 @@ private fun MenuSheet(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSearch() }),
                 trailingIcon = {
-                    if (state.query.isNotEmpty()) {
-                        IconButton(onClick = { onQueryChange("") }) {
+                    if (field.text.isNotEmpty()) {
+                        IconButton(onClick = {
+                            field = TextFieldValue("")
+                            onQueryChange("")
+                        }) {
                             Icon(Icons.Filled.Close, contentDescription = "Clear", tint = MikeMuted)
                         }
                     }
