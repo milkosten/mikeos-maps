@@ -14,8 +14,8 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.5.4-proximity"
+        versionCode = 19
+        versionName = "0.5.5-owntiles"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
         buildConfigField("String", "DAEMON_BASE_URL", "\"https://127.0.0.1:7743\"")
@@ -40,7 +40,7 @@ android {
         buildConfigField(
             "String",
             "BASEMAP_URL",
-            "\"https://mikeos-basemap-production.up.railway.app\""
+            "\"https://tiles.osmike.com\""   // self-hosted on the Hetzner box (was Railway)
         )
 
         // mikeos-osm: our self-hosted planet OSM stack (Nominatim geocode + Overpass POI), behind
