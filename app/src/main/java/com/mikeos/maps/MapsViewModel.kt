@@ -74,6 +74,12 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     private var arrived = false
     @Volatile private var rerouting = false
 
+    // ETA smoothing — a moving average of speed (+ EMA of the ETA) so it stays stable instead of
+    // swinging from 20 to 50 min every time Mike speeds up or crawls.
+    private var emaSpeedKmh = 0.0
+    private var emaSpeedSeeded = false
+    private var emaEtaMin = Double.NaN
+
     init {
         loadHistory()
     }
@@ -111,7 +117,24 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             _guidance.value = null
             return
         }
-        _navInfo.value = NavInfo.compute(fix.speedKmh, pts, fix.lat, fix.lon, a.km, a.etaMin)
+        // Smoothed ETA: a moving average of speed drives a stable ETA (instantaneous speed made it
+        // jump wildly). The live estimate is also logged with the 5s samples for later analysis.
+        val remKm = NavGeo.remainingKm(pts, fix.lat, fix.lon)
+        val plannedAvg = if (a.etaMin > 0.5 && a.km > 0) a.km / (a.etaMin / 60.0) else 40.0
+        val rawKmh = fix.speedKmh ?: 0.0
+        emaSpeedKmh = if (!emaSpeedSeeded) {
+            emaSpeedSeeded = true
+            if (rawKmh > 1.0) rawKmh else plannedAvg
+        } else {
+            emaSpeedKmh * (1 - SPEED_EMA_ALPHA) + rawKmh * SPEED_EMA_ALPHA
+        }
+        val effSpeed = emaSpeedKmh.coerceAtLeast(4.0)   // floor so a brief stop doesn't explode the ETA
+        val rawEta = remKm / effSpeed * 60.0
+        emaEtaMin = if (emaEtaMin.isNaN()) rawEta else emaEtaMin * (1 - ETA_EMA_ALPHA) + rawEta * ETA_EMA_ALPHA
+        // Speedometer shows the ACTUAL current speed; ETA/remaining use the smoothed value.
+        _navInfo.value = NavInfo(speedKmh = rawKmh, remainingKm = remKm, remainingMin = emaEtaMin)
+        trips.lastEtaMin = emaEtaMin
+        trips.lastRemainingKm = remKm
 
         // Turn-by-turn: advance to the next maneuver ahead.
         val steps = _state.value.routeSteps
@@ -170,6 +193,11 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         maneuverIdx = 0
         offRouteTicks = 0
         arrived = false
+        emaSpeedKmh = 0.0
+        emaSpeedSeeded = false
+        emaEtaMin = Double.NaN
+        trips.lastEtaMin = null
+        trips.lastRemainingKm = null
         Speaker.reset()
     }
 
@@ -309,5 +337,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         private const val ARRIVE_M = 40.0      // auto-end the trip within this of the destination
         private const val OFF_ROUTE_M = 70.0   // reroute when the cross-track distance exceeds this
         private const val OFF_ROUTE_TICKS = 4  // …for this many consecutive polls (~12s) — avoids noise
+        private const val SPEED_EMA_ALPHA = 0.08  // long-window speed average → stable ETA
+        private const val ETA_EMA_ALPHA = 0.15    // extra smoothing on the ETA itself
     }
 }

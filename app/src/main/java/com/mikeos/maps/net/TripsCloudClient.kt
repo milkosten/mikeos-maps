@@ -70,8 +70,15 @@ class TripsCloudClient(
         val lon: Double,
     )
 
-    /** A single speed+loc sample recorded during a drive. */
-    data class Sample(val lat: Double, val lon: Double, val speedKmh: Double, val tsMillis: Long)
+    /** A single speed+loc sample recorded during a drive (+ the live ETA estimate, for analysis). */
+    data class Sample(
+        val lat: Double,
+        val lon: Double,
+        val speedKmh: Double,
+        val tsMillis: Long,
+        val etaMin: Double? = null,
+        val remainingKm: Double? = null,
+    )
 
     /** A trip row (from the history list / detail). */
     data class Trip(
@@ -217,6 +224,10 @@ class TripsCloudClient(
                     .put("speed_kmh", s.speedKmh)
                     // ISO-8601 string — NEVER an epoch Long.
                     .put("ts", Instant.ofEpochMilli(s.tsMillis).toString())
+                    .apply {
+                        s.etaMin?.let { put("eta_min", it) }
+                        s.remainingKm?.let { put("remaining_km", it) }
+                    }
             )
         }
         val payload = JSONObject().put("samples", arr).toString().toRequestBody(jsonMedia)

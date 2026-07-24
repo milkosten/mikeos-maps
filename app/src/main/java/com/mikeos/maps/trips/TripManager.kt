@@ -65,6 +65,11 @@ class TripManager private constructor(private val appContext: Context) {
     private val _active = MutableStateFlow<ActiveTrip?>(null)
     val active: StateFlow<ActiveTrip?> = _active.asStateFlow()
 
+    // The app's live (smoothed) ETA estimate, pushed in from the ViewModel each tick and logged
+    // with every 5s sample so we can analyse / improve the ETA model later.
+    @Volatile var lastEtaMin: Double? = null
+    @Volatile var lastRemainingKm: Double? = null
+
     // Serialize lifecycle transitions so a heartbeat sample can't race start/end.
     private val lock = Mutex()
 
@@ -173,7 +178,7 @@ class TripManager private constructor(private val appContext: Context) {
 
         val stored = cloud.postSamples(
             key, current.tripId,
-            listOf(TripsCloudClient.Sample(fix.lat, fix.lon, speed, fix.ts)),
+            listOf(TripsCloudClient.Sample(fix.lat, fix.lon, speed, fix.ts, lastEtaMin, lastRemainingKm)),
         )
         if (stored <= 0) {
             Log.w(TAG, "beatSample: sample not stored (never-trust-200 guard)")
