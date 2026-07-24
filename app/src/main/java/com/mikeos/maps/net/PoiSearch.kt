@@ -23,6 +23,7 @@ object PoiSearch {
     private const val TAG = "PoiSearch"
     private const val UA = "MikeMaps/0.1 (MikeOS navigation agent; mikaelwestoo@gmail.com)"
     private const val ENDPOINT = "https://overpass-api.de/api/interpreter"
+    private const val RADIUS_M = 60_000   // 60 km proximity radius for named POIs
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .dns(Doh.dns)
@@ -52,13 +53,17 @@ object PoiSearch {
         if (words.isEmpty()) return@withContext emptyList()
         val filter = words.joinToString("") { "[\"name\"~\"$it\",i]" }
 
-        val d = 0.30   // ~33 km box around the user
-        val bbox = "${nearLat - d},${nearLon - d},${nearLat + d},${nearLon + d}"
+        // Proximity query: fetch ALL name matches within a radius (a real circle, `around:`), so the
+        // NEAREST is guaranteed in the set — then the caller ranks closest-first. Nominatim's
+        // importance-limited top-N would otherwise miss the nearest in a big city. Farther unique
+        // names fall through to the worldwide geocoder fallback elsewhere.
+        val around = "(around:$RADIUS_M,$nearLat,$nearLon)"
+        val fetch = maxOf(limit, 60)
         val ql = """
-            [out:json][timeout:20];
-            (node$filter($bbox);
-             way$filter($bbox););
-            out center $limit;
+            [out:json][timeout:25];
+            (node$around$filter;
+             way$around$filter;);
+            out center $fetch;
         """.trimIndent()
 
         val req = Request.Builder()
@@ -85,7 +90,7 @@ object PoiSearch {
                     val city = tags.optString("addr:city").takeUnless { it.isBlank() }
                     val label = if (city != null) "$nm, $city" else nm
                     Geocoder.Place(name = label, lat = lat, lon = lon)
-                }.distinctBy { it.name.lowercase() }.take(limit)
+                }.distinctBy { it.name.lowercase() }.take(60)
             }
         } catch (e: Exception) {
             Log.w(TAG, "overpass failed: ${e.message}")
