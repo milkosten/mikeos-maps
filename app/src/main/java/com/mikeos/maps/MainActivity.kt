@@ -446,15 +446,18 @@ private fun MenuSheet(
     onResume: (String) -> Unit,
     onChoose: (Suggestion) -> Unit,
 ) {
-    // Hold the field's text + CURSOR locally (TextFieldValue). Binding the field's value directly to
-    // the VM's async StateFlow made the cursor jump on every suggestion update — this keeps it put.
+    // The text field OWNS its text + cursor (TextFieldValue), full stop. It is seeded once from
+    // state.query when the sheet opens (this composable only exists while menuOpen == true, so it
+    // re-seeds on every open — that's how post-choose/post-end clears take effect).
+    //
+    // DO NOT add a LaunchedEffect(state.query){ field = … } feedback loop here. onQueryChange writes
+    // each keystroke into the VM's StateFlow; StateFlow collection + recomposition lag behind fast
+    // typing, so an effect keyed on state.query fires with a STALE value ("l'ange g") while the field
+    // is already ahead ("l'ange gard") → it resets the field backwards, deleting the just-typed
+    // letters AND nuking the IME's composing span (garbled keyboard-suggestion words). That bug made
+    // the input unusable: "l'ange gardien" → "l'ange gein". The field is local; the VM never feeds
+    // text back into it.
     var field by remember { mutableStateOf(TextFieldValue(state.query, TextRange(state.query.length))) }
-    // Reflect only EXTERNAL query changes (after choosing / ending clears it) — not our own keystrokes.
-    LaunchedEffect(state.query) {
-        if (state.query != field.text) {
-            field = TextFieldValue(state.query, TextRange(state.query.length))
-        }
-    }
     Column(
         Modifier
             .fillMaxWidth()
