@@ -91,6 +91,49 @@ object NavGeo {
 }
 
 /**
+ * Speed-adaptive follow zoom while navigating (like Google Maps): slow → zoomed in, fast → zoomed
+ * out, so you always see roughly the right look-ahead. Mike's feel: ~100 m radius at 10 km/h,
+ * ~500 m at 30, ~1 km at 70. We turn a speed into a desired look-ahead radius, then into a MapLibre
+ * zoom given the actual viewport height + latitude (Web-Mercator, 512-px tiles).
+ */
+object NavCamera {
+
+    // (speed km/h → look-ahead radius m). Linearly interpolated; honours Mike's anchor points.
+    private val ANCHORS = listOf(
+        0.0 to 90.0,
+        10.0 to 100.0,
+        30.0 to 500.0,
+        70.0 to 1000.0,
+        120.0 to 1600.0,
+    )
+
+    fun radiusForSpeed(kmh: Double): Double {
+        val s = kmh.coerceAtLeast(0.0)
+        for (i in 0 until ANCHORS.size - 1) {
+            val (s0, r0) = ANCHORS[i]
+            val (s1, r1) = ANCHORS[i + 1]
+            if (s <= s1) {
+                val t = if (s1 > s0) (s - s0) / (s1 - s0) else 0.0
+                return r0 + t * (r1 - r0)
+            }
+        }
+        return ANCHORS.last().second
+    }
+
+    /** MapLibre zoom that shows [radiusM] from map centre to the top edge of an [heightPx]-tall map. */
+    fun zoomForRadius(radiusM: Double, lat: Double, heightPx: Double): Double {
+        val h = if (heightPx > 100) heightPx else 1920.0
+        val r = radiusM.coerceAtLeast(30.0)
+        // metersPerPixel = 156543.03392 * cos(lat) / 2^(zoom+1); radius = metersPerPixel * (h/2).
+        val z = Math.log(156543.03392 * Math.cos(Math.toRadians(lat)) * h / (2.0 * r)) / Math.log(2.0) - 1.0
+        return z.coerceIn(12.5, 18.5)
+    }
+
+    fun zoomForSpeed(kmh: Double, lat: Double, heightPx: Double): Double =
+        zoomForRadius(radiusForSpeed(kmh), lat, heightPx)
+}
+
+/**
  * Live navigation readout shown in the driving HUD, recomputed each location tick while a trip is
  * active. [remainingMin] uses the live speed when moving, else the route's planned average.
  */

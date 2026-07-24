@@ -13,6 +13,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.mikeos.maps.BuildConfig
+import com.mikeos.maps.nav.NavCamera
 import com.mikeos.maps.net.DaemonLocation
 import com.mikeos.maps.net.PolylineCodec
 import com.mikeos.maps.ui.theme.MikeAccent
@@ -51,6 +52,7 @@ fun NavigationMap(
     location: DaemonLocation.Fix?,
     routePoints: List<PolylineCodec.LatLon>,
     follow: Boolean,
+    navigating: Boolean,
     onUserPan: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -104,12 +106,12 @@ fun NavigationMap(
                                 PropertyFactory.circleStrokeWidth(3f),
                             ),
                         )
-                        holder.render(location, routePoints, follow)
+                        holder.render(location, routePoints, follow, navigating)
                     }
                 }
             }
         },
-        update = { holder.render(location, routePoints, follow) },
+        update = { holder.render(location, routePoints, follow, navigating) },
     )
 }
 
@@ -119,8 +121,10 @@ private class NavMapHolder {
     var style: Style? = null
     private var centeredOnce = false
     private var lastFittedRoute: List<PolylineCodec.LatLon>? = null
+    // Smoothed speed for the adaptive nav zoom (raw GPS speed is noisy → EMA to avoid zoom jitter).
+    private var smoothedKmh = 0.0
 
-    fun render(loc: DaemonLocation.Fix?, points: List<PolylineCodec.LatLon>, follow: Boolean) {
+    fun render(loc: DaemonLocation.Fix?, points: List<PolylineCodec.LatLon>, follow: Boolean, navigating: Boolean) {
         val s = style ?: return
         val routeGeom: Geometry =
             if (points.size >= 2) LineString.fromLngLats(points.map { Point.fromLngLat(it.lon, it.lat) })
@@ -131,7 +135,15 @@ private class NavMapHolder {
 
         val m = map ?: return
         if (loc != null && follow) {
-            val zoom = if (!centeredOnce) INITIAL_ZOOM else m.cameraPosition.zoom
+            // While NAVIGATING, zoom adapts to speed (close when slow, wide when fast); otherwise
+            // keep the initial ~5 km on first center and whatever zoom Mike set afterwards.
+            val zoom = if (navigating) {
+                val raw = loc.speedKmh ?: 0.0
+                smoothedKmh = if (centeredOnce) smoothedKmh * 0.7 + raw * 0.3 else raw
+                NavCamera.zoomForSpeed(smoothedKmh, loc.lat, m.height.toDouble())
+            } else {
+                if (!centeredOnce) INITIAL_ZOOM else m.cameraPosition.zoom
+            }
             centeredOnce = true
             val pos = CameraPosition.Builder().target(LatLng(loc.lat, loc.lon)).zoom(zoom).build()
             runCatching { m.easeCamera(CameraUpdateFactory.newCameraPosition(pos), CAMERA_MS) }

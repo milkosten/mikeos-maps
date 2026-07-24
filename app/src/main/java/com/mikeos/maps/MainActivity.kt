@@ -157,6 +157,7 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             location = location,
             routePoints = state.routePoints,
             follow = follow,
+            navigating = active != null,
             onUserPan = { follow = false },
             modifier = Modifier.fillMaxSize(),
         )

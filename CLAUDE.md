@@ -12,7 +12,11 @@ tell stories (MikeStoryteller) — it announces the trip on the hive (`trip.star
 / `trip.ended`) and lets them react.
 
 **Type:** MikeOS **Android app** (app-agent). Package / applicationId **`com.mikeos.maps`**
-(namespace `com.mikeos.maps`), versionCode **4**, versionName **0.4.0-turnbyturn**.
+(namespace `com.mikeos.maps`), versionCode **5**, versionName **0.4.1-adaptivezoom**.
+
+**Adaptive nav zoom:** while navigating, the follow-camera zoom adapts to speed (`nav/NavCamera`) —
+~100 m look-ahead at 10 km/h, ~500 m at 30, ~1 km at 70 — computed from a speed→radius→zoom curve
+off the live (smoothed) speed, viewport height, and latitude.
 
 **Map-first UX (like Google Maps):** the app opens straight onto a **full-screen OSM map**
 (MapLibre GL Native, self-hosted **`mikeos-basemap`** — `$BASEMAP_URL/style.json`, a Protomaps planet
