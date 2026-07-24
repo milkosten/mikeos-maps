@@ -297,7 +297,17 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
         val seen = mutableSetOf<String>()
         fun shortKey(s: Suggestion) = s.label.substringBefore(",").trim().lowercase()
-        return (local + hist + poi + online).filter { seen.add(shortKey(it)) }.take(8)
+        val merged = (local + hist + poi + online).filter { seen.add(shortKey(it)) }
+        // FOCUS ON THE CLOSEST: rank by distance from the user (a namesake 1000 km away must never
+        // beat the one you're standing at). Coordless history names sink to the end.
+        return if (near != null) {
+            merged.sortedBy { s ->
+                if (s.lat != null && s.lon != null) NavGeo.haversineKm(near.lat, near.lon, s.lat, s.lon)
+                else Double.MAX_VALUE
+            }.take(8)
+        } else {
+            merged.take(8)
+        }
     }
 
     /** Pick a suggestion → preview a route to it (using its coords, or re-geocoding a history hit). */

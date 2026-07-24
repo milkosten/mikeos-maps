@@ -44,7 +44,7 @@ object Geocoder {
         if (q.isBlank()) return@withContext emptyList()
         val enc = URLEncoder.encode(q, "UTF-8")
         if (nearLat != null && nearLon != null) {
-            val d = 3.0   // ~330 km each way
+            val d = 1.5   // ~165 km box — local trips; farther places fall through to worldwide below
             val viewbox = "${nearLon - d},${nearLat + d},${nearLon + d},${nearLat - d}"
             val local = run(
                 "https://nominatim.openstreetmap.org/search?q=$enc&format=json&limit=$limit" +
