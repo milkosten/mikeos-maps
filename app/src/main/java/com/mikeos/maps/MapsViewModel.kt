@@ -410,7 +410,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             pendingPlace = null; pendingFix = null; pendingRoute = null
             _state.value = _state.value.copy(
                 busy = false,
-                notice = if (id != null) "Navigating — recording the drive." else "Trip created but the cloud didn't confirm it.",
+                notice = if (id != null) null else "Trip created but the cloud didn't confirm it.",
             )
         }
     }

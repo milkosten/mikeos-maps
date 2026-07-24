@@ -232,9 +232,12 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                 Spacer(Modifier.height(10.dp))
             }
 
-            state.notice?.let {
-                NoticePill(it)
-                Spacer(Modifier.height(10.dp))
+            // Status notices only when NOT navigating — no clutter on the driving screen.
+            if (active == null) {
+                state.notice?.let {
+                    NoticePill(it)
+                    Spacer(Modifier.height(10.dp))
+                }
             }
 
             val a = active
@@ -332,13 +335,8 @@ private fun DrivingHud(
         colors = CardDefaults.cardColors(containerColor = MikeSurface),
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            // No address here — you know where you're going; the map gets the space (map-first).
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "NAVIGATING",
-                    color = MikeGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp,
-                    modifier = Modifier.weight(1f),
-                )
+            // No status text at all (map-first) — just the End control, then the live metrics.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Button(
                     onClick = onEnd,
                     enabled = !busy,
@@ -346,7 +344,7 @@ private fun DrivingHud(
                     colors = ButtonDefaults.buttonColors(containerColor = MikeRed, contentColor = MikeOnSurface),
                 ) { Text("End", fontWeight = FontWeight.Bold) }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Metric("${speed.roundToInt()}", "km/h", hero = true)
                 Metric(NavFormat.distance(remKm), "to go")
