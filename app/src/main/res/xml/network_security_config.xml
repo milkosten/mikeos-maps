@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Dev-only: allow self-signed to the on-device daemon loopback.
+  OkHttp additionally installs a permissive TrustManager scoped to 127.0.0.1
+  (see net/DaemonClient.kt). External APIs (Nominatim, Open-Meteo) use normal HTTPS.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

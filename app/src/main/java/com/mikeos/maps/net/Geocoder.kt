@@ -1,0 +1,64 @@
+package com.mikeos.maps.net
+
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
+
+/**
+ * Turns a destination NAME ("Nice city center") into coordinates via **OSM Nominatim**
+ * (`GET https://nominatim.openstreetmap.org/search?q=&format=json&limit=1`). Keyless,
+ * zero-cost. A descriptive User-Agent is required by the Nominatim usage policy.
+ *
+ * Uses the **DoH** OkHttp client because this ROM's system DNS intermittently fails.
+ */
+object Geocoder {
+
+    private const val TAG = "Geocoder"
+    private const val UA = "MikeMaps/0.1 (MikeOS navigation agent; mikaelwestoo@gmail.com)"
+
+    data class Place(val name: String, val lat: Double, val lon: Double)
+
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .dns(Doh.dns)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .build()
+
+    /** Geocode a free-text destination to a single best hit. Null if nothing found / failed. */
+    suspend fun geocode(query: String): Place? = withContext(Dispatchers.IO) {
+        val q = query.trim()
+        if (q.isBlank()) return@withContext null
+        val url = "https://nominatim.openstreetmap.org/search?q=" +
+            URLEncoder.encode(q, "UTF-8") + "&format=json&limit=1"
+        val req = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA)
+            .header("Accept", "application/json")
+            .get()
+            .build()
+        try {
+            client.newCall(req).execute().use { resp ->
+                val raw = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "geocode HTTP ${resp.code}: $raw")
+                    return@withContext null
+                }
+                val arr = runCatching { JSONArray(raw) }.getOrNull() ?: return@withContext null
+                if (arr.length() == 0) return@withContext null
+                val o = arr.getJSONObject(0)
+                val lat = o.optString("lat").toDoubleOrNull() ?: return@withContext null
+                val lon = o.optString("lon").toDoubleOrNull() ?: return@withContext null
+                val name = o.optString("display_name").takeUnless { it.isBlank() } ?: q
+                Place(name = name, lat = lat, lon = lon)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "geocode failed: ${e.message}")
+            null
+        }
+    }
+}
