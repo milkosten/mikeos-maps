@@ -15,8 +15,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -155,6 +158,7 @@ private fun MapFirstScreen(vm: MapsViewModel) {
 
     var follow by remember { mutableStateOf(true) }
     var menuOpen by remember { mutableStateOf(false) }
+    var savedOpen by remember { mutableStateOf(false) }
     // Orientation: heading-up (course-up) is the default while driving; tap the compass for north-up.
     var northUp by remember { mutableStateOf(false) }
 
@@ -212,6 +216,11 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                         Icon(Icons.Filled.Menu, contentDescription = "Menu", tint = MikeOnSurface)
                     }
                     Spacer(Modifier.weight(1f))
+                    // ★ saved places — a dedicated, searchable screen (scales to thousands).
+                    CircleButton(onClick = { vm.loadFavorites(); savedOpen = true }) {
+                        Icon(Icons.Filled.Star, contentDescription = "Saved places", tint = MikeAccent)
+                    }
+                    Spacer(Modifier.size(10.dp))
                     com.mikeos.core.ui.AgentIconButton(
                         onClick = { com.mikeos.core.ui.AgentInspectorActivity.start(context) }
                     )
@@ -286,6 +295,23 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                     menuOpen = false
                 },
                 onToggleFavorite = { label, lat, lon -> vm.toggleFavorite(label, lat, lon) },
+            )
+        }
+    }
+
+    if (savedOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { savedOpen = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MikeSurface,
+        ) {
+            SavedPlacesSheet(
+                favorites = state.favorites,
+                onChoose = { p ->
+                    vm.chooseSuggestion(Suggestion(p.label, p.lat, p.lon, fromHistory = false))
+                    savedOpen = false
+                },
+                onRemove = { p -> vm.toggleFavorite(p.label, p.lat, p.lon) },
             )
         }
     }
@@ -572,20 +598,7 @@ private fun MenuSheet(
             }
         }
 
-        // SAVED ⭐ — Mike's saved places (homes / work / favorites). Tap to route; tap ★ to remove.
-        if (state.favorites.isNotEmpty()) {
-            Spacer(Modifier.height(22.dp))
-            Text("SAVED · ${state.favorites.size}", color = MikeAccent, fontSize = 11.sp,
-                fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-            Spacer(Modifier.height(8.dp))
-            state.favorites.forEach { p ->
-                FavoriteRow(
-                    p = p,
-                    onClick = { onChoose(Suggestion(p.label, p.lat, p.lon, fromHistory = false)) },
-                    onRemove = { onToggleFavorite(p.label, p.lat, p.lon) },
-                )
-            }
-        }
+        // (Saved places live behind the ★ button top-right — a dedicated, searchable, scalable screen.)
 
         Spacer(Modifier.height(22.dp))
         Text("TRIP HISTORY · ${state.history.size}", color = MikeMuted, fontSize = 11.sp,
@@ -634,6 +647,64 @@ private fun SuggestionRow(s: Suggestion, saved: Boolean, onClick: () -> Unit, on
                     contentDescription = if (saved) "Remove from saved" else "Save place",
                     tint = if (saved) MikeAccent else MikeMuted,
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Dedicated saved-places screen (behind the ★ top-right). Shows ONLY starred places, latest-used
+ * first, searchable, in a LazyColumn so it scales to thousands without janking.
+ */
+@Composable
+private fun SavedPlacesSheet(
+    favorites: List<com.mikeos.maps.data.SavedPlace>,
+    onChoose: (com.mikeos.maps.data.SavedPlace) -> Unit,
+    onRemove: (com.mikeos.maps.data.SavedPlace) -> Unit,
+) {
+    // Local query state → no async feedback, so no cursor-jump (see the MenuSheet note).
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(query, favorites) {
+        val q = query.trim()
+        if (q.isBlank()) favorites
+        else favorites.filter { it.label.contains(q, ignoreCase = true) || it.shortName.contains(q, ignoreCase = true) }
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(0.9f)
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 12.dp),
+    ) {
+        Text("SAVED PLACES · ${favorites.size}", color = MikeAccent, fontSize = 13.sp,
+            fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Search saved places", color = MikeMuted) },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = MikeMuted) },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            trailingIcon = {
+                if (query.isNotEmpty()) IconButton(onClick = { query = "" }) {
+                    Icon(Icons.Filled.Close, contentDescription = "Clear", tint = MikeMuted)
+                }
+            },
+        )
+        Spacer(Modifier.height(8.dp))
+        if (filtered.isEmpty()) {
+            Text(
+                if (favorites.isEmpty()) "No saved places yet — tap ★ on a search result to save one."
+                else "No saved place matches \"$query\".",
+                color = MikeMuted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 12.dp),
+            )
+        } else {
+            LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                items(filtered, key = { it.label }) { p ->
+                    FavoriteRow(p, onClick = { onChoose(p) }, onRemove = { onRemove(p) })
+                }
             }
         }
     }
