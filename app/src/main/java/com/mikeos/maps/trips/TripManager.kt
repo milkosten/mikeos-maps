@@ -155,6 +155,10 @@ class TripManager private constructor(private val appContext: Context) {
             JSONObject()
                 .put("trip_id", tripId)   // consumers (Guide->route.pois, Storyteller) correlate on this
                 .put("dest", destName)
+                .put("dest_lat", destLat)     // so Guide/Storyteller can locate the destination immediately
+                .put("dest_lon", destLon)
+                .put("origin_lat", originLat)
+                .put("origin_lon", originLon)
                 .put("eta_min", route.etaMin)
                 .put("km", route.km)
                 .put("polyline", route.polyline)
