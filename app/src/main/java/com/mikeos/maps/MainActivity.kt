@@ -178,6 +178,8 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             headingUp = !northUp,
             bearingDeg = location?.bearing,
             onUserPan = { follow = false },
+            onPoiTap = { name, lat, lon -> vm.onMapPoiTapped(name, lat, lon) },
+            onMapTapEmpty = { vm.dismissTappedPlace() },
             modifier = Modifier.fillMaxSize(),
         )
 
@@ -250,6 +252,12 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                     busy = state.busy,
                     onStart = { vm.startPreviewed() },
                     onCancel = { vm.cancelPreview() },
+                )
+                state.tappedPlace != null -> TappedPlaceCard(
+                    place = state.tappedPlace!!,
+                    busy = state.busy,
+                    onDirections = { vm.directionsToTappedPlace() },
+                    onDismiss = { vm.dismissTappedPlace() },
                 )
                 else -> WhereToBar(location, onClick = { menuOpen = true })
             }
@@ -395,6 +403,51 @@ private fun RoutePreviewPanel(
                 ) {
                     if (busy) CircularProgressIndicator(Modifier.size(16.dp), color = MikeBg, strokeWidth = 2.dp)
                     else Text("Start", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+/** Google-Maps-style card for a POI tapped on the map: its name + a one-tap Directions button. */
+@Composable
+private fun TappedPlaceCard(
+    place: TappedPoi,
+    busy: Boolean,
+    onDirections: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MikeSurface),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Place, contentDescription = null, tint = MikeAccent)
+                Spacer(Modifier.size(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("PLACE", color = MikeAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+                    Text(place.name, color = MikeOnSurface, fontSize = 16.sp, fontWeight = FontWeight.Bold,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = MikeMuted)
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Button(
+                onClick = onDirections,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MikeAccent, contentColor = MikeBg),
+            ) {
+                if (busy) CircularProgressIndicator(Modifier.size(16.dp), color = MikeBg, strokeWidth = 2.dp)
+                else {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.size(6.dp))
+                    Text("Directions", fontWeight = FontWeight.Bold)
                 }
             }
         }

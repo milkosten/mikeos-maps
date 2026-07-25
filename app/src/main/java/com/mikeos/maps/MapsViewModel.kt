@@ -49,7 +49,12 @@ data class MapsState(
     // Live type-ahead suggestions while entering a destination.
     val suggestions: List<Suggestion> = emptyList(),
     val history: List<TripsCloudClient.Trip> = emptyList(),
+    // A POI tapped directly on the map (Super U, a bus stop, a place label) — awaiting a Directions tap.
+    val tappedPlace: TappedPoi? = null,
 )
+
+/** A feature the user tapped on the map surface, offered for one-tap directions. */
+data class TappedPoi(val name: String, val lat: Double, val lon: Double)
 
 class MapsViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -309,6 +314,24 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             merged.take(8)
         }
+    }
+
+    /** A POI was tapped on the map → show the directions card (unless mid-trip or already previewing). */
+    fun onMapPoiTapped(name: String, lat: Double, lon: Double) {
+        if (active.value != null || _state.value.previewing) return
+        _state.value = _state.value.copy(tappedPlace = TappedPoi(name, lat, lon))
+    }
+
+    /** Empty-map tap (or Close on the card) → dismiss the tapped-POI card. */
+    fun dismissTappedPlace() {
+        if (_state.value.tappedPlace != null) _state.value = _state.value.copy(tappedPlace = null)
+    }
+
+    /** "Directions" on the tapped-POI card → preview a route to it (reuses the search preview flow). */
+    fun directionsToTappedPlace() {
+        val t = _state.value.tappedPlace ?: return
+        _state.value = _state.value.copy(tappedPlace = null)
+        chooseSuggestion(Suggestion(t.name, t.lat, t.lon, fromHistory = false))
     }
 
     /** Pick a suggestion → preview a route to it (using its coords, or re-geocoding a history hit). */

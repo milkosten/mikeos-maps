@@ -31,6 +31,7 @@ import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.Feature
 import org.maplibre.geojson.Geometry
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
@@ -56,6 +57,8 @@ fun NavigationMap(
     headingUp: Boolean,
     bearingDeg: Double?,
     onUserPan: () -> Unit,
+    onPoiTap: (name: String, lat: Double, lon: Double) -> Unit,
+    onMapTapEmpty: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val mapView = rememberMapViewWithLifecycle()
@@ -63,6 +66,8 @@ fun NavigationMap(
     val green = MikeGreen.toArgb()
     val holder = remember { NavMapHolder() }
     val currentOnUserPan by rememberUpdatedState(onUserPan)
+    val currentOnPoiTap by rememberUpdatedState(onPoiTap)
+    val currentOnMapTapEmpty by rememberUpdatedState(onMapTapEmpty)
 
     AndroidView(
         modifier = modifier,
@@ -80,6 +85,31 @@ fun NavigationMap(
                         override fun onMove(detector: MoveGestureDetector) {}
                         override fun onMoveEnd(detector: MoveGestureDetector) {}
                     })
+                    // Tap a named feature (a Super U, a bus stop, a place label) → offer directions to
+                    // it (Google-Maps style). We query the rendered vector tiles under the finger and
+                    // pick the nearest NAMED feature; an empty tap dismisses any open card.
+                    map.addOnMapClickListener { latLng ->
+                        val screen = map.projection.toScreenLocation(latLng)
+                        val pad = 24f  // finger-friendly hit box around the tap
+                        val box = android.graphics.RectF(
+                            screen.x - pad, screen.y - pad, screen.x + pad, screen.y + pad,
+                        )
+                        val feats = runCatching { map.queryRenderedFeatures(box) }.getOrDefault(emptyList())
+                        // Prefer a named POINT (a POI/label pin) under the finger; else any named feature.
+                        val hit = feats.firstOrNull { featureName(it) != null && it.geometry() is Point }
+                            ?: feats.firstOrNull { featureName(it) != null }
+                        val name = hit?.let { featureName(it) }
+                        if (name != null) {
+                            val g = hit.geometry()
+                            val lat = if (g is Point) g.latitude() else latLng.latitude
+                            val lon = if (g is Point) g.longitude() else latLng.longitude
+                            currentOnPoiTap(name, lat, lon)
+                            true   // consume — this was a POI tap
+                        } else {
+                            currentOnMapTapEmpty()
+                            false  // let the map handle a plain tap
+                        }
+                    }
                     map.setStyle(Style.Builder().fromUri("${BuildConfig.BASEMAP_URL}/style.json")) { style ->
                         holder.style = style
                         // Route line.
@@ -179,6 +209,15 @@ private class NavMapHolder {
     companion object {
         private val EMPTY: Geometry = LineString.fromLngLats(emptyList())
     }
+}
+
+/** The best human name for a tapped vector feature, or null if it's unlabeled (water, generic fill). */
+private fun featureName(f: Feature): String? {
+    for (key in arrayOf("name", "name:latin", "name:en")) {
+        val v = runCatching { f.getStringProperty(key) }.getOrNull()
+        if (!v.isNullOrBlank()) return v
+    }
+    return null
 }
 
 private const val SRC_ROUTE = "route-src"
