@@ -36,6 +36,8 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Straight
@@ -283,6 +285,7 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                     vm.chooseSuggestion(s)
                     menuOpen = false
                 },
+                onToggleFavorite = { label, lat, lon -> vm.toggleFavorite(label, lat, lon) },
             )
         }
     }
@@ -498,6 +501,7 @@ private fun MenuSheet(
     onSearch: () -> Unit,
     onResume: (String) -> Unit,
     onChoose: (Suggestion) -> Unit,
+    onToggleFavorite: (label: String, lat: Double?, lon: Double?) -> Unit,
 ) {
     // The text field OWNS its text + cursor (TextFieldValue), full stop. It is seeded once from
     // state.query when the sheet opens (this composable only exists while menuOpen == true, so it
@@ -554,10 +558,33 @@ private fun MenuSheet(
             }
         }
 
-        // Type-ahead suggestions (history first, then places) — tap to preview a route to it.
+        // Type-ahead suggestions (history first, then places) — tap to preview, tap ★ to save.
         if (state.suggestions.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
-            state.suggestions.forEach { s -> SuggestionRow(s, onClick = { onChoose(s) }) }
+            state.suggestions.forEach { s ->
+                val saved = state.favorites.any { it.label == s.label }
+                SuggestionRow(
+                    s = s,
+                    saved = saved,
+                    onClick = { onChoose(s) },
+                    onToggleSave = { onToggleFavorite(s.label, s.lat, s.lon) },
+                )
+            }
+        }
+
+        // SAVED ⭐ — Mike's saved places (homes / work / favorites). Tap to route; tap ★ to remove.
+        if (state.favorites.isNotEmpty()) {
+            Spacer(Modifier.height(22.dp))
+            Text("SAVED · ${state.favorites.size}", color = MikeAccent, fontSize = 11.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+            Spacer(Modifier.height(8.dp))
+            state.favorites.forEach { p ->
+                FavoriteRow(
+                    p = p,
+                    onClick = { onChoose(Suggestion(p.label, p.lat, p.lon, fromHistory = false)) },
+                    onRemove = { onToggleFavorite(p.label, p.lat, p.lon) },
+                )
+            }
         }
 
         Spacer(Modifier.height(22.dp))
@@ -579,7 +606,7 @@ private fun MenuSheet(
 // ---- Small reusables -----------------------------------------------------------------------
 
 @Composable
-private fun SuggestionRow(s: Suggestion, onClick: () -> Unit) {
+private fun SuggestionRow(s: Suggestion, saved: Boolean, onClick: () -> Unit, onToggleSave: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -595,7 +622,42 @@ private fun SuggestionRow(s: Suggestion, onClick: () -> Unit) {
             modifier = Modifier.size(20.dp),
         )
         Spacer(Modifier.size(12.dp))
-        Text(s.label, color = MikeOnSurface, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(
+            s.label, color = MikeOnSurface, fontSize = 14.sp, maxLines = 2,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
+        // ★ save/unsave — only for suggestions we have coordinates for.
+        if (s.lat != null && s.lon != null) {
+            IconButton(onClick = onToggleSave) {
+                Icon(
+                    if (saved) Icons.Filled.Star else Icons.Filled.StarBorder,
+                    contentDescription = if (saved) "Remove from saved" else "Save place",
+                    tint = if (saved) MikeAccent else MikeMuted,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FavoriteRow(p: com.mikeos.maps.data.SavedPlace, onClick: () -> Unit, onRemove: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.Star, contentDescription = null, tint = MikeAccent, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.size(12.dp))
+        Text(
+            p.label, color = MikeOnSurface, fontSize = 14.sp, maxLines = 2,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onRemove) {
+            Icon(Icons.Filled.Star, contentDescription = "Remove from saved", tint = MikeAccent)
+        }
     }
 }
 

@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
+import java.time.Instant
 
 /**
  * The heart of MikeMaps: the DETERMINISTIC trip lifecycle. It does NOT rely on the LLM picking
@@ -289,6 +290,29 @@ class TripManager private constructor(private val appContext: Context) {
     suspend fun congestion(lat: Double, lon: Double, radiusM: Int = 1500, hour: Int? = null): TripsCloudClient.Congestion? {
         val key = apiKey() ?: return null
         return cloud.congestion(key, lat, lon, radiusM, hour)
+    }
+
+    // ---- SAVED PLACES ----------------------------------------------------------------------
+
+    /**
+     * Announce on the hive (via MikeAgent) that Mike ⭐-saved a place, so siblings react:
+     * MikeGuide pre-warms POIs around it, MikeStoryteller seeds a story, MikeMind remembers it.
+     * Best-effort — matches the `place.saved` contract documented in each app's from_mikemaps.md.
+     */
+    suspend fun announcePlaceSaved(
+        label: String, shortName: String, lat: Double, lon: Double, kind: String,
+    ) {
+        broadcast(
+            "place.saved",
+            JSONObject()
+                .put("label", label)
+                .put("short_name", shortName)
+                .put("lat", lat)
+                .put("lon", lon)
+                .put("kind", kind)
+                .put("saved_at", Instant.now().toString())
+                .toString(),
+        )
     }
 
     // ---- helpers ---------------------------------------------------------------------------

@@ -10,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -26,12 +28,17 @@ data class SavedPlace(
     val lon: Double,
     val lastUsedMs: Long,
     val useCount: Int,
+    val favorite: Boolean = false,   // Mike ⭐-saved it (a home / work / favorite)
+    val kind: String? = null,        // "home" | "work" | "favorite" (null when not a favorite)
 )
 
 @Dao
 interface PlacesDao {
     @Query("SELECT * FROM places ORDER BY lastUsedMs DESC LIMIT :limit")
     suspend fun recent(limit: Int = 300): List<SavedPlace>
+
+    @Query("SELECT * FROM places WHERE favorite = 1 ORDER BY lastUsedMs DESC")
+    suspend fun favorites(): List<SavedPlace>
 
     @Query("SELECT * FROM places WHERE label = :label LIMIT 1")
     suspend fun byLabel(label: String): SavedPlace?
@@ -40,7 +47,15 @@ interface PlacesDao {
     suspend fun upsert(p: SavedPlace)
 }
 
-@Database(entities = [SavedPlace::class], version = 1, exportSchema = false)
+// v1 → v2: add the favorite flag + kind (non-destructive so the offline cache survives the update).
+private val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE places ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE places ADD COLUMN kind TEXT")
+    }
+}
+
+@Database(entities = [SavedPlace::class], version = 2, exportSchema = false)
 abstract class PlacesDb : RoomDatabase() {
     abstract fun dao(): PlacesDao
 
@@ -49,7 +64,7 @@ abstract class PlacesDb : RoomDatabase() {
         fun get(context: Context): PlacesDb = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, PlacesDb::class.java, "mikemaps-places.db",
-            ).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2).build().also { instance = it }
         }
     }
 }
@@ -57,7 +72,7 @@ abstract class PlacesDb : RoomDatabase() {
 /** The offline places cache: save on navigate, fuzzy-search on type. */
 object PlacesRepo {
 
-    /** Record (or bump) a place Mike navigated to. */
+    /** Record (or bump) a place Mike navigated to. Preserves the ⭐ favorite flag if already set. */
     suspend fun save(context: Context, label: String, lat: Double, lon: Double) = withContext(Dispatchers.IO) {
         val dao = PlacesDb.get(context).dao()
         val short = label.substringBefore(",").trim().ifBlank { label }
@@ -70,8 +85,45 @@ object PlacesRepo {
                 lon = lon,
                 lastUsedMs = System.currentTimeMillis(),
                 useCount = (existing?.useCount ?: 0) + 1,
+                favorite = existing?.favorite ?: false,   // don't clobber a saved favorite on re-navigate
+                kind = existing?.kind,
             ),
         )
+    }
+
+    /** Mike's ⭐-saved places (homes / work / favorites), newest-first. */
+    suspend fun favorites(context: Context): List<SavedPlace> = withContext(Dispatchers.IO) {
+        PlacesDb.get(context).dao().favorites()
+    }
+
+    /** Is this exact place currently a favorite? */
+    suspend fun isFavorite(context: Context, label: String): Boolean = withContext(Dispatchers.IO) {
+        PlacesDb.get(context).dao().byLabel(label)?.favorite == true
+    }
+
+    /**
+     * Set or clear the ⭐ favorite flag for a place (upserting it into the cache if new). Returns the
+     * resulting row. [kind] defaults to "favorite" when saving.
+     */
+    suspend fun setFavorite(
+        context: Context, label: String, lat: Double, lon: Double,
+        favorite: Boolean, kind: String? = null,
+    ): SavedPlace = withContext(Dispatchers.IO) {
+        val dao = PlacesDb.get(context).dao()
+        val short = label.substringBefore(",").trim().ifBlank { label }
+        val existing = dao.byLabel(label)
+        val row = SavedPlace(
+            label = label,
+            shortName = short,
+            lat = if (existing != null && lat == 0.0) existing.lat else lat,
+            lon = if (existing != null && lon == 0.0) existing.lon else lon,
+            lastUsedMs = existing?.lastUsedMs ?: System.currentTimeMillis(),
+            useCount = existing?.useCount ?: 0,
+            favorite = favorite,
+            kind = if (favorite) (kind ?: "favorite") else null,
+        )
+        dao.upsert(row)
+        row
     }
 
     /**

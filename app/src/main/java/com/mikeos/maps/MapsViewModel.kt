@@ -7,6 +7,7 @@ import com.mikeos.maps.nav.Guidance
 import com.mikeos.maps.nav.NavGeo
 import com.mikeos.maps.nav.NavGuidance
 import com.mikeos.maps.data.PlacesRepo
+import com.mikeos.maps.data.SavedPlace
 import com.mikeos.maps.nav.NavInfo
 import com.mikeos.maps.nav.Speaker
 import com.mikeos.maps.net.DaemonLocation
@@ -49,6 +50,8 @@ data class MapsState(
     // Live type-ahead suggestions while entering a destination.
     val suggestions: List<Suggestion> = emptyList(),
     val history: List<TripsCloudClient.Trip> = emptyList(),
+    // Mike's ⭐-saved places (homes / work / favorites) — the quick-pick list in the search sheet.
+    val favorites: List<SavedPlace> = emptyList(),
     // A POI tapped directly on the map (Super U, a bus stop, a place label) — awaiting a Directions tap.
     val tappedPlace: TappedPoi? = null,
 )
@@ -100,6 +103,37 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         loadHistory()
+        loadFavorites()
+    }
+
+    // ---- SAVED PLACES (⭐) ------------------------------------------------------------------
+
+    fun loadFavorites() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(favorites = PlacesRepo.favorites(getApplication()))
+        }
+    }
+
+    /**
+     * Toggle a place as a ⭐ favorite. On SAVE it announces `place.saved` on the hive (via MikeAgent)
+     * so Guide/Storyteller/Mind react. Needs coordinates (a coordless history hit can't be saved yet).
+     */
+    fun toggleFavorite(label: String, lat: Double?, lon: Double?) {
+        if (lat == null || lon == null) {
+            _state.value = _state.value.copy(notice = "Can't save that one — no location for it yet.")
+            return
+        }
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val nowFav = !PlacesRepo.isFavorite(app, label)
+            val row = PlacesRepo.setFavorite(app, label, lat, lon, favorite = nowFav, kind = "favorite")
+            loadFavorites()
+            if (nowFav) {
+                runCatching {
+                    trips.announcePlaceSaved(row.label, row.shortName, row.lat, row.lon, row.kind ?: "favorite")
+                }
+            }
+        }
     }
 
     // ---- LIVE LOCATION (map-first: the moving dot + prefetch + HUD) ------------------------
