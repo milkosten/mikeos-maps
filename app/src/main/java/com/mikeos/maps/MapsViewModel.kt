@@ -298,7 +298,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { PoiSearch.search(query, near.lat, near.lon, 40) }.getOrDefault(emptyList())
                 .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
         } else emptyList()
-        val online = runCatching { Geocoder.search(query, 6, near?.lat, near?.lon) }
+        val online = runCatching { Geocoder.search(query, 8, near?.lat, near?.lon) }
             .getOrDefault(emptyList())
             .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
         val seen = mutableSetOf<String>()

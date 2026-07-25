@@ -30,30 +30,48 @@ object Geocoder {
         .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
+    // Common French street-type abbreviations Nominatim doesn't always expand. Applied per-word so
+    // "111 bd carnot" also matches "111 boulevard carnot". (Typo tolerance — "carrot"→"carnot" — is
+    // NOT solved here; that needs the self-hosted semantic search, G2.)
+    private val ABBREV = mapOf(
+        "bd" to "boulevard", "bld" to "boulevard", "blvd" to "boulevard", "boul" to "boulevard",
+        "av" to "avenue", "ave" to "avenue", "pl" to "place", "rte" to "route",
+        "che" to "chemin", "imp" to "impasse", "sq" to "square", "all" to "allée",
+    )
+
+    private fun expandQuery(q: String): String =
+        q.split(Regex("\\s+")).joinToString(" ") { w -> ABBREV[w.lowercase().trimEnd('.')] ?: w }
+
+    private fun key(p: Place) = "${(p.lat * 1e4).toLong()},${(p.lon * 1e4).toLong()}"
+
     /**
-     * Type-ahead: up to [limit] candidate places. When [nearLat]/[nearLon] are given, results are
-     * first BIASED to a ~330 km box around the user (so "Villefranche" near Nice wins over the one
-     * in Canada); only if that finds nothing do we fall back to a worldwide search. Empty on failure.
+     * Type-ahead: up to [limit] candidate places. When [nearLat]/[nearLon] are given we MERGE a
+     * location-biased search (a ~165 km box around the user) with a worldwide one and DEDUPE — so we
+     * return many candidates (≥5 for real queries) and the caller ranks by distance, meaning a
+     * namesake far away can never outrank the local one. Empty on failure.
      */
     suspend fun search(
         query: String,
-        limit: Int = 6,
+        limit: Int = 8,
         nearLat: Double? = null,
         nearLon: Double? = null,
     ): List<Place> = withContext(Dispatchers.IO) {
-        val q = query.trim()
+        val q = expandQuery(query.trim())
         if (q.isBlank()) return@withContext emptyList()
         val enc = URLEncoder.encode(q, "UTF-8")
+        val out = LinkedHashMap<String, Place>()   // insertion-ordered, deduped by rounded coords
         if (nearLat != null && nearLon != null) {
-            val d = 1.5   // ~165 km box — local trips; farther places fall through to worldwide below
+            val d = 1.5   // ~165 km box around the user
             val viewbox = "${nearLon - d},${nearLat + d},${nearLon + d},${nearLat - d}"
-            val local = run(
-                "${BuildConfig.NOMINATIM_URL}/search?q=$enc&format=json&limit=$limit" +
-                    "&viewbox=$viewbox&bounded=1"
-            )
-            if (local.isNotEmpty()) return@withContext local
+            for (p in run("${BuildConfig.NOMINATIM_URL}/search?q=$enc&format=json&limit=$limit&viewbox=$viewbox&bounded=1"))
+                out.putIfAbsent(key(p), p)
         }
-        run("${BuildConfig.NOMINATIM_URL}/search?q=$enc&format=json&limit=$limit")
+        // Fill from a worldwide search (fewer if the local box already covered it).
+        if (out.size < limit) {
+            for (p in run("${BuildConfig.NOMINATIM_URL}/search?q=$enc&format=json&limit=$limit"))
+                out.putIfAbsent(key(p), p)
+        }
+        out.values.toList()
     }
 
     private suspend fun run(url: String): List<Place> = withContext(Dispatchers.IO) {
@@ -83,37 +101,14 @@ object Geocoder {
         }
     }
 
-    /** Geocode a free-text destination to a single best hit. Null if nothing found / failed. */
-    suspend fun geocode(query: String): Place? = withContext(Dispatchers.IO) {
-        val q = query.trim()
-        if (q.isBlank()) return@withContext null
-        val url = "${BuildConfig.NOMINATIM_URL}/search?q=" +
-            URLEncoder.encode(q, "UTF-8") + "&format=json&limit=1"
-        val req = Request.Builder()
-            .url(url)
-            .header("User-Agent", UA)
-            .header("Accept", "application/json")
-            .apply { if (BuildConfig.OSM_TOKEN.isNotBlank()) header("Authorization", "Bearer ${BuildConfig.OSM_TOKEN}") }
-            .get()
-            .build()
-        try {
-            client.newCall(req).execute().use { resp ->
-                val raw = resp.body?.string().orEmpty()
-                if (!resp.isSuccessful) {
-                    Log.w(TAG, "geocode HTTP ${resp.code}: $raw")
-                    return@withContext null
-                }
-                val arr = runCatching { JSONArray(raw) }.getOrNull() ?: return@withContext null
-                if (arr.length() == 0) return@withContext null
-                val o = arr.getJSONObject(0)
-                val lat = o.optString("lat").toDoubleOrNull() ?: return@withContext null
-                val lon = o.optString("lon").toDoubleOrNull() ?: return@withContext null
-                val name = o.optString("display_name").takeUnless { it.isBlank() } ?: q
-                Place(name = name, lat = lat, lon = lon)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "geocode failed: ${e.message}")
-            null
-        }
-    }
+    /**
+     * Geocode a free-text destination to a single best hit. When [nearLat]/[nearLon] are given, a
+     * local match wins over a far-away namesake (biased box first, then worldwide). Null if nothing
+     * found / failed. Applies the same abbreviation expansion as [search].
+     */
+    suspend fun geocode(
+        query: String,
+        nearLat: Double? = null,
+        nearLon: Double? = null,
+    ): Place? = search(query, limit = 1, nearLat = nearLat, nearLon = nearLon).firstOrNull()
 }

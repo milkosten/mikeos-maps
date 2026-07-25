@@ -518,10 +518,6 @@ private fun MenuSheet(
             .padding(horizontal = 20.dp)
             .padding(bottom = 28.dp),
     ) {
-        Text("MIKEMAPS", color = MikeAccent, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-        Text("navigation + road sensing", color = MikeMuted, fontSize = 12.sp)
-        Spacer(Modifier.height(16.dp))
-
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = field,

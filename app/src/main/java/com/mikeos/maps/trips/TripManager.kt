@@ -101,7 +101,10 @@ class TripManager private constructor(private val appContext: Context) {
         cloud.route(fromLat, fromLon, toLat, toLon)
 
     /** Geocode a destination name -> coords (Nominatim). */
-    suspend fun geocode(name: String): Geocoder.Place? = Geocoder.geocode(name)
+    suspend fun geocode(name: String): Geocoder.Place? {
+        val near = runCatching { currentFix() }.getOrNull()   // bias to a local match over a far namesake
+        return Geocoder.geocode(name, near?.lat, near?.lon)
+    }
 
     /** Read the current daemon fix (the ONE shared location). */
     suspend fun currentFix(): DaemonLocation.Fix? = DaemonLocation.current()
