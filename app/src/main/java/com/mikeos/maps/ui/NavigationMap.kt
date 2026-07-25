@@ -15,6 +15,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.mikeos.maps.BuildConfig
 import com.mikeos.maps.nav.NavCamera
 import com.mikeos.maps.net.DaemonLocation
+import com.mikeos.maps.net.MapAnalytics
 import com.mikeos.maps.net.PolylineCodec
 import com.mikeos.maps.ui.theme.MikeAccent
 import com.mikeos.maps.ui.theme.MikeGreen
@@ -23,6 +24,7 @@ import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.gestures.MoveGestureDetector
+import org.maplibre.android.gestures.StandardScaleGestureDetector
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
@@ -73,17 +75,29 @@ fun NavigationMap(
         modifier = modifier,
         factory = {
             mapView.also { mv ->
+                MapAnalytics.init(mv.context)   // start the non-invasive usage-telemetry flusher (idempotent)
                 mv.getMapAsync { map ->
                     holder.map = map
                     map.uiSettings.isAttributionEnabled = true
                     map.uiSettings.isLogoEnabled = true
                     map.uiSettings.isRotateGesturesEnabled = true
                     map.uiSettings.isCompassEnabled = false   // we render our own compass button
-                    // User drag → stop following so he can look around.
+                    // Log the resting camera at the end of a user gesture (non-invasive analytics).
+                    val logCamera = {
+                        val p = map.cameraPosition
+                        p.target?.let { MapAnalytics.move(it.latitude, it.longitude, p.zoom, p.bearing) }
+                    }
+                    // User drag → stop following so he can look around; log where he panned to.
                     map.addOnMoveListener(object : MapLibreMap.OnMoveListener {
                         override fun onMoveBegin(detector: MoveGestureDetector) { currentOnUserPan() }
                         override fun onMove(detector: MoveGestureDetector) {}
-                        override fun onMoveEnd(detector: MoveGestureDetector) {}
+                        override fun onMoveEnd(detector: MoveGestureDetector) { logCamera() }
+                    })
+                    // Pinch-zoom end → log the new zoom level too.
+                    map.addOnScaleListener(object : MapLibreMap.OnScaleListener {
+                        override fun onScaleBegin(detector: StandardScaleGestureDetector) {}
+                        override fun onScale(detector: StandardScaleGestureDetector) {}
+                        override fun onScaleEnd(detector: StandardScaleGestureDetector) { logCamera() }
                     })
                     // Tap a named feature (a Super U, a bus stop, a place label) → offer directions to
                     // it (Google-Maps style). We query the rendered vector tiles under the finger and
@@ -99,13 +113,16 @@ fun NavigationMap(
                         val hit = feats.firstOrNull { featureName(it) != null && it.geometry() is Point }
                             ?: feats.firstOrNull { featureName(it) != null }
                         val name = hit?.let { featureName(it) }
+                        val zoom = map.cameraPosition.zoom
                         if (name != null) {
                             val g = hit.geometry()
                             val lat = if (g is Point) g.latitude() else latLng.latitude
                             val lon = if (g is Point) g.longitude() else latLng.longitude
+                            MapAnalytics.tap(lat, lon, "poi", name, zoom)
                             currentOnPoiTap(name, lat, lon)
                             true   // consume — this was a POI tap
                         } else {
+                            MapAnalytics.tap(latLng.latitude, latLng.longitude, "empty", null, zoom)
                             currentOnMapTapEmpty()
                             false  // let the map handle a plain tap
                         }

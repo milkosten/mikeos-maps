@@ -397,6 +397,60 @@ class TripsCloudClient(
         Unit
     }
 
+    /** One map interaction: a tap ("poi"/"empty") or a "move" (pan/zoom end) with the camera state. */
+    data class Interaction(
+        val type: String,          // "tap" | "move"
+        val detail: String?,       // taps: "poi" | "empty" ; moves: null
+        val lat: Double,
+        val lon: Double,
+        val zoom: Double?,
+        val bearing: Double?,
+        val featureName: String?,
+        val tsMillis: Long,
+    )
+
+    /**
+     * Batch-log map interactions (taps + pans/zooms). Best-effort background telemetry: returns the
+     * number of rows the cloud actually stored (never-trust-200), 0 on any failure. `ts` is an
+     * ISO-8601 string per the house rule.
+     */
+    suspend fun postInteractions(apiKey: String, deviceId: String?, events: List<Interaction>): Int =
+        withContext(Dispatchers.IO) {
+            if (events.isEmpty()) return@withContext 0
+            val arr = JSONArray()
+            for (e in events) {
+                arr.put(
+                    JSONObject()
+                        .put("type", e.type)
+                        .put("lat", e.lat)
+                        .put("lon", e.lon)
+                        .apply {
+                            e.detail?.let { put("detail", it) }
+                            e.zoom?.let { put("zoom", it) }
+                            e.bearing?.let { put("bearing", it) }
+                            e.featureName?.let { put("feature_name", it) }
+                        }
+                        .put("ts", Instant.ofEpochMilli(e.tsMillis).toString()),
+                )
+            }
+            val payload = JSONObject().put("events", arr)
+                .apply { if (!deviceId.isNullOrBlank()) put("device_id", deviceId) }
+                .toString().toRequestBody(jsonMedia)
+            try {
+                client.newCall(keyed(apiKey, "/api/interactions").post(payload).build()).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        Log.w(TAG, "interactions HTTP ${resp.code}")
+                        return@withContext 0
+                    }
+                    val body = resp.body?.string().orEmpty()
+                    runCatching { JSONObject(body).optInt("stored", 0) }.getOrDefault(0)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "postInteractions failed: ${e.message}")
+                0
+            }
+        }
+
     private fun parseTrip(o: JSONObject): Trip = Trip(
         tripId = o.optString("trip_id").ifBlank { o.optString("id") },
         destName = o.str("dest_name"),

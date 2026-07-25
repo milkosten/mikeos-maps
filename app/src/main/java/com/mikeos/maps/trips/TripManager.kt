@@ -269,6 +269,15 @@ class TripManager private constructor(private val appContext: Context) {
         cloud.logSearch(key, query, results, chosenLabel, chosenLat, chosenLon, nearLat, nearLon)
     }
 
+    /**
+     * Batch-log map interactions to trips-cloud. Returns rows stored, or -1 if there's no api key
+     * yet (caller re-queues for the next flush). Best-effort background telemetry.
+     */
+    suspend fun logInteractions(events: List<TripsCloudClient.Interaction>): Int {
+        val key = apiKey() ?: return -1
+        return cloud.postInteractions(key, deviceId(), events)
+    }
+
     suspend fun getTrip(tripId: String): TripsCloudClient.Trip? {
         val key = apiKey() ?: return null
         return cloud.getTrip(key, tripId)
