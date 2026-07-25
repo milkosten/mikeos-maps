@@ -2,6 +2,7 @@ package com.mikeos.maps
 
 import android.Manifest
 import android.os.Build
+import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -106,11 +107,17 @@ import com.mikeos.maps.ui.theme.MikeSurface
 import com.mikeos.maps.ui.theme.MikeSurfaceVariant
 import kotlin.math.roundToInt
 
+/** A destination handed to MikeMaps by another app (MikeShopping "Directions", or a geo: link). */
+data class DestReq(val name: String, val lat: Double, val lon: Double)
+
 class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { }
+
+    // Inbound deep-link destination (extras or geo:), consumed once by the composable.
+    private val pendingDest = androidx.compose.runtime.mutableStateOf<DestReq?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -120,13 +127,60 @@ class MainActivity : ComponentActivity() {
         requestPermissions()
         // Embed the shared MikeAgent runtime (soul + nav skills + heartbeat + live hive).
         MapsMikeAgent.install(this)
+        pendingDest.value = parseDest(intent)
 
         setContent {
             MikeOsTheme {
                 val vm: MapsViewModel = viewModel()
                 MapFirstScreen(vm)
+                val dest = pendingDest.value
+                androidx.compose.runtime.LaunchedEffect(dest) {
+                    if (dest != null) {
+                        vm.navigateTo(dest.name, dest.lat, dest.lon)
+                        pendingDest.value = null
+                    }
+                }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        parseDest(intent)?.let { pendingDest.value = it }
+    }
+
+    /** Parse a destination from explicit extras (dest_lat/dest_lon/dest_name) or a `geo:` URI. */
+    private fun parseDest(intent: Intent?): DestReq? {
+        intent ?: return null
+        if (intent.hasExtra("dest_lat") && intent.hasExtra("dest_lon")) {
+            val lat = intent.getDoubleExtra("dest_lat", Double.NaN)
+            val lon = intent.getDoubleExtra("dest_lon", Double.NaN)
+            if (!lat.isNaN() && !lon.isNaN()) {
+                return DestReq(intent.getStringExtra("dest_name") ?: "Destination", lat, lon)
+            }
+        }
+        val data = intent.data
+        if (data != null && data.scheme == "geo") {
+            // geo:lat,lon  or  geo:0,0?q=lat,lon(Name)
+            val ssp = data.schemeSpecificPart ?: return null
+            val coordPart = ssp.substringBefore("?")
+            var lat = coordPart.substringBefore(",").toDoubleOrNull()
+            var lon = coordPart.substringAfter(",", "").substringBefore("?").toDoubleOrNull()
+            var name = "Destination"
+            val q = data.query?.substringAfter("q=", "") ?: ""
+            if (q.isNotBlank()) {
+                val qCoords = q.substringBefore("(")
+                qCoords.substringBefore(",").toDoubleOrNull()?.let { la ->
+                    qCoords.substringAfter(",", "").toDoubleOrNull()?.let { lo -> lat = la; lon = lo }
+                }
+                if (q.contains("(")) name = q.substringAfter("(").substringBefore(")")
+            }
+            if (lat != null && lon != null && (lat != 0.0 || lon != 0.0)) {
+                return DestReq(name, lat!!, lon!!)
+            }
+        }
+        return null
     }
 
     override fun onStart() {

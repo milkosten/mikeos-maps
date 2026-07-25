@@ -361,6 +361,14 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.tappedPlace != null) _state.value = _state.value.copy(tappedPlace = null)
     }
 
+    /**
+     * External deep-link entry: another app (e.g. MikeShopping) launched us with a destination.
+     * Preview a route to (lat, lon) — the user confirms with Start, exactly like a tapped POI.
+     */
+    fun navigateTo(name: String, lat: Double, lon: Double) {
+        chooseSuggestion(Suggestion(name.ifBlank { "Destination" }, lat, lon, fromHistory = false))
+    }
+
     /** "Directions" on the tapped-POI card → preview a route to it (reuses the search preview flow). */
     fun directionsToTappedPlace() {
         val t = _state.value.tappedPlace ?: return
