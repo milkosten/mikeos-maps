@@ -14,8 +14,8 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 27
-        versionName = "0.7.1-trip-coords"
+        versionCode = 28
+        versionName = "0.8.0-geocode-cutover"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
         buildConfigField("String", "DAEMON_BASE_URL", "\"https://127.0.0.1:7743\"")
@@ -44,11 +44,14 @@ android {
         )
 
         // mikeos-osm: our self-hosted planet OSM stack (Nominatim geocode + Overpass POI), behind
-        // a Bearer-token gateway. Defaults to the PUBLIC services so the app works until we flip;
-        // the G1 cutover = point these at https://osm.osmike.com/{nominatim,overpass} + set the token.
-        buildConfigField("String", "NOMINATIM_URL", "\"https://nominatim.openstreetmap.org\"")
-        buildConfigField("String", "OVERPASS_URL", "\"https://overpass-api.de\"")
-        buildConfigField("String", "OSM_TOKEN", "\"\"")   // Bearer token; empty = no auth header (public)
+        // a Bearer-token gateway at osm.osmike.com.
+        // G1 (partial) cutover — Nominatim is LIVE on our box, so geocode/reverse now go self-hosted
+        // (full-speed, unlimited, worldwide). Overpass stays PUBLIC until its planet import finishes,
+        // then flip OVERPASS_URL to https://osm.osmike.com/overpass too. The OSM_TOKEN Bearer is sent
+        // to both clients; overpass-api.de ignores it, so setting it now is safe.
+        buildConfigField("String", "NOMINATIM_URL", "\"https://osm.osmike.com/nominatim\"")
+        buildConfigField("String", "OVERPASS_URL", "\"https://overpass-api.de\"")   // TODO: -> osm.osmike.com/overpass when Overpass serves
+        buildConfigField("String", "OSM_TOKEN", "\"d1385c3a8ec5febce95ee2481c41b93b83779a78477ef5d1b2c630c7064adf7e\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
