@@ -1,5 +1,9 @@
 package com.mikeos.maps.ui
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
@@ -14,6 +18,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.mikeos.maps.BuildConfig
 import com.mikeos.maps.nav.NavCamera
+import com.mikeos.maps.nav.NavGeo
 import com.mikeos.maps.net.DaemonLocation
 import com.mikeos.maps.net.MapAnalytics
 import com.mikeos.maps.net.PolylineCodec
@@ -32,6 +37,7 @@ import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.Geometry
@@ -156,6 +162,24 @@ fun NavigationMap(
                                 PropertyFactory.circleStrokeWidth(3f),
                             ),
                         )
+                        // Driving puck: an arrow that points the way (hidden until navigating). Rotation
+                        // is MAP-aligned + set to the travel bearing, so it points screen-up in
+                        // heading-up mode and the compass direction in north-up. Sits above the dot.
+                        style.addImage(IMG_ARROW, arrowBitmap(accent))
+                        style.addLayer(
+                            SymbolLayer(LYR_ME_ARROW, SRC_ME).withProperties(
+                                PropertyFactory.iconImage(IMG_ARROW),
+                                PropertyFactory.iconSize(0.8f),
+                                PropertyFactory.iconAllowOverlap(true),
+                                PropertyFactory.iconIgnorePlacement(true),
+                                PropertyFactory.iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
+                                // Stay upright facing the camera even when the map is tilted, so it
+                                // reads as a crisp arrow pointing up-screen (not squashed onto the road).
+                                PropertyFactory.iconPitchAlignment(Property.ICON_PITCH_ALIGNMENT_VIEWPORT),
+                                PropertyFactory.iconRotate(0f),
+                                PropertyFactory.visibility(Property.NONE),
+                            ),
+                        )
                         holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg)
                     }
                 }
@@ -189,29 +213,63 @@ private class NavMapHolder {
             if (points.size >= 2) LineString.fromLngLats(points.map { Point.fromLngLat(it.lon, it.lat) })
             else EMPTY
         s.getSourceAs<GeoJsonSource>(SRC_ROUTE)?.setGeoJson(routeGeom)
-        val meGeom: Geometry = if (loc != null) Point.fromLngLat(loc.lon, loc.lat) else EMPTY
+        // SNAP-TO-ROUTE: GPS is ±5-10 m noisy, so while navigating ride the blue line — put the puck
+        // on the nearest point ON the route and take its heading from that segment's forward bearing,
+        // UNLESS we're genuinely off-route (then show the raw fix and let the reroute logic react).
+        val snap = if (navigating && loc != null && points.size >= 2)
+            NavGeo.snapToRoute(points, loc.lat, loc.lon)?.takeIf { it.offsetM < SNAP_MAX_M } else null
+        val dispLat = snap?.lat ?: loc?.lat
+        val dispLon = snap?.lon ?: loc?.lon
+        // Heading: the route's forward bearing when snapped; else keep the last real GPS bearing (it
+        // goes null at rest, so holding it stops the arrow snapping back to north when stopped).
+        when {
+            snap != null -> lastBearing = snap.bearingDeg
+            bearingDeg != null -> lastBearing = bearingDeg
+        }
+
+        val meGeom: Geometry = if (dispLat != null && dispLon != null) Point.fromLngLat(dispLon, dispLat) else EMPTY
         s.getSourceAs<GeoJsonSource>(SRC_ME)?.setGeoJson(meGeom)
 
+        // Marker STYLE: an arrow that points the way while navigating, a plain dot when idle.
+        if (navigating) {
+            s.getLayer(LYR_ME_DOT)?.setProperties(PropertyFactory.visibility(Property.NONE))
+            s.getLayer(LYR_ME_ARROW)?.setProperties(
+                PropertyFactory.visibility(Property.VISIBLE),
+                PropertyFactory.iconRotate((lastBearing ?: 0.0).toFloat()),
+            )
+        } else {
+            s.getLayer(LYR_ME_DOT)?.setProperties(PropertyFactory.visibility(Property.VISIBLE))
+            s.getLayer(LYR_ME_ARROW)?.setProperties(PropertyFactory.visibility(Property.NONE))
+        }
+
         val m = map ?: return
-        if (loc != null && follow) {
+        if (dispLat != null && dispLon != null && follow) {
             // While NAVIGATING, zoom adapts to speed (close when slow, wide when fast); otherwise
             // keep the initial ~5 km on first center and whatever zoom Mike set afterwards.
             val zoom = if (navigating) {
-                val raw = loc.speedKmh ?: 0.0
+                val raw = loc?.speedKmh ?: 0.0
                 smoothedKmh = if (centeredOnce) smoothedKmh * 0.7 + raw * 0.3 else raw
-                NavCamera.zoomForSpeed(smoothedKmh, loc.lat, m.height.toDouble())
+                NavCamera.zoomForSpeed(smoothedKmh, dispLat, m.height.toDouble())
             } else {
                 if (!centeredOnce) INITIAL_ZOOM else m.cameraPosition.zoom
             }
-            // Heading-up while navigating: rotate the map so the road ahead points forward. Keep the
-            // last bearing while stopped (bearing goes null) so it doesn't spin back to north.
-            if (bearingDeg != null) lastBearing = bearingDeg
+            // Heading-up while navigating: rotate the map so the road ahead points forward (lastBearing
+            // is kept above while stopped so it doesn't spin back to north).
             val bearing = if (navigating && headingUp) (lastBearing ?: 0.0) else 0.0
             centeredOnce = true
+            // While navigating, push the puck DOWN to ~lower third (more road ahead) via a top padding,
+            // but keep it ABOVE the bottom HUD panel. Target y ≈ (height + padTop) / 2 → ~0.62·height
+            // here. Centered (no padding) otherwise.
+            val padTop = if (navigating) m.height * 0.25 else 0.0
+            // Tilt the camera forward for the 3D driver's view (Google-Maps style) while navigating;
+            // flat (top-down) when idle.
+            val tilt = if (navigating) TILT_DRIVING else 0.0
             val pos = CameraPosition.Builder()
-                .target(LatLng(loc.lat, loc.lon))
+                .target(LatLng(dispLat, dispLon))
                 .zoom(zoom)
                 .bearing(bearing)
+                .tilt(tilt)
+                .padding(0.0, padTop, 0.0, 0.0)
                 .build()
             runCatching { m.easeCamera(CameraUpdateFactory.newCameraPosition(pos), CAMERA_MS) }
         } else if (!follow && points.size >= 2 && lastFittedRoute !== points) {
@@ -242,9 +300,33 @@ private const val LYR_ROUTE = "route-line"
 private const val SRC_ME = "me-src"
 private const val LYR_ME_RING = "me-ring"
 private const val LYR_ME_DOT = "me-dot"
+private const val LYR_ME_ARROW = "me-arrow"
+private const val IMG_ARROW = "me-arrow-img"
+
+/** A chevron/navigation arrow pointing UP (0°), [fill]-coloured with a white outline — the driving puck. */
+private fun arrowBitmap(fill: Int): Bitmap {
+    val s = 72
+    val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
+    val path = Path().apply {
+        moveTo(s * 0.50f, s * 0.10f)   // apex (top)
+        lineTo(s * 0.84f, s * 0.88f)   // bottom-right wing
+        lineTo(s * 0.50f, s * 0.66f)   // centre notch (gives the chevron look)
+        lineTo(s * 0.16f, s * 0.88f)   // bottom-left wing
+        close()
+    }
+    c.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fill; style = Paint.Style.FILL })
+    c.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE; style = Paint.Style.STROKE
+        strokeWidth = s * 0.06f; strokeJoin = Paint.Join.ROUND
+    })
+    return bmp
+}
 private const val INITIAL_ZOOM = 13.0    // ~5 km across on open
 private const val FIT_PADDING_PX = 110
 private const val CAMERA_MS = 700
+private const val TILT_DRIVING = 50.0    // camera pitch (°) for the 3D driver's view while navigating
+private const val SNAP_MAX_M = 40.0      // snap the puck to the route if within this of the line; else raw GPS
 
 /**
  * A [MapView] whose Android lifecycle is forwarded from the current Compose lifecycle owner, with

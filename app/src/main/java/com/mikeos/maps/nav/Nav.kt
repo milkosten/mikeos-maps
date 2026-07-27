@@ -105,6 +105,53 @@ object NavGeo {
         return sqrt(cx * cx + cy * cy)
     }
 
+    /** A point snapped onto the route line: its location, the route's forward bearing there, and how
+     * far ([offsetM]) the raw fix was from the line. */
+    data class Snap(val lat: Double, val lon: Double, val bearingDeg: Double, val offsetM: Double)
+
+    /**
+     * Snap a raw GPS fix onto the route LINE — the nearest point on the nearest segment, plus that
+     * segment's forward bearing (direction of travel there). GPS is ±5-10 m noisy, so during driving
+     * the puck should ride the blue line pointing forward, not float beside it. Returns null if the
+     * route is too short; callers should ignore the snap when [Snap.offsetM] is large (genuinely
+     * off-route → let the reroute logic handle it) and fall back to the raw fix.
+     */
+    fun snapToRoute(route: List<PolylineCodec.LatLon>, curLat: Double, curLon: Double): Snap? {
+        if (route.size < 2) return null
+        val mPerDegLat = 111_320.0
+        val mPerDegLon = 111_320.0 * cos(Math.toRadians(curLat))
+        var ax = (route[0].lon - curLon) * mPerDegLon
+        var ay = (route[0].lat - curLat) * mPerDegLat
+        var best = Double.MAX_VALUE
+        var bestLat = curLat; var bestLon = curLon; var bestBearing = 0.0
+        for (i in 1 until route.size) {
+            val bx = (route[i].lon - curLon) * mPerDegLon
+            val by = (route[i].lat - curLat) * mPerDegLat
+            val dx = bx - ax; val dy = by - ay
+            val len2 = dx * dx + dy * dy
+            val t = if (len2 <= 1e-9) 0.0 else (((-ax) * dx + (-ay) * dy) / len2).coerceIn(0.0, 1.0)
+            val cx = ax + t * dx; val cy = ay + t * dy
+            val d = sqrt(cx * cx + cy * cy)
+            if (d < best) {
+                best = d
+                bestLon = curLon + cx / mPerDegLon
+                bestLat = curLat + cy / mPerDegLat
+                bestBearing = bearingDeg(route[i - 1].lat, route[i - 1].lon, route[i].lat, route[i].lon)
+            }
+            ax = bx; ay = by
+        }
+        return Snap(bestLat, bestLon, bestBearing, best)
+    }
+
+    /** Initial bearing (degrees clockwise from north, 0-360) from A to B. */
+    fun bearingDeg(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val phi1 = Math.toRadians(lat1); val phi2 = Math.toRadians(lat2)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val y = sin(dLon) * cos(phi2)
+        val x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLon)
+        return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
+    }
+
     /**
      * Remaining route distance (km) from the current position to the end of [route]: snap to the
      * nearest route vertex, then sum the segment lengths from there onward (plus the hop from the
