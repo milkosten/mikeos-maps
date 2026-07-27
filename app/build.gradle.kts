@@ -14,8 +14,8 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 28
-        versionName = "0.8.0-geocode-cutover"
+        versionCode = 29
+        versionName = "0.9.0-explore-nearby"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
         buildConfigField("String", "DAEMON_BASE_URL", "\"https://127.0.0.1:7743\"")
@@ -50,7 +50,10 @@ android {
         // then flip OVERPASS_URL to https://osm.osmike.com/overpass too. The OSM_TOKEN Bearer is sent
         // to both clients; overpass-api.de ignores it, so setting it now is safe.
         buildConfigField("String", "NOMINATIM_URL", "\"https://osm.osmike.com/nominatim\"")
-        buildConfigField("String", "OVERPASS_URL", "\"https://overpass-api.de\"")   // TODO: -> osm.osmike.com/overpass when Overpass serves
+        buildConfigField("String", "OVERPASS_URL", "\"https://overpass-api.de\"")   // PoiSearch name-REGEX: stays PUBLIC (regex is ~31s single-threaded on our box; the big warm public cluster is fast).
+        // NearbySearch (parking/fuel/EV) is a TAG query — the fast (~0.3-0.75s) indexed pattern our
+        // self-hosted planet Overpass excels at, with no public rate limits. Point it at our box.
+        buildConfigField("String", "OVERPASS_SELF_URL", "\"https://osm.osmike.com/overpass\"")
         buildConfigField("String", "OSM_TOKEN", "\"d1385c3a8ec5febce95ee2481c41b93b83779a78477ef5d1b2c630c7064adf7e\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

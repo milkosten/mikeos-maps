@@ -12,6 +12,7 @@ import com.mikeos.maps.nav.NavInfo
 import com.mikeos.maps.nav.Speaker
 import com.mikeos.maps.net.DaemonLocation
 import com.mikeos.maps.net.Geocoder
+import com.mikeos.maps.net.NearbySearch
 import com.mikeos.maps.net.OfflinePrefetch
 import com.mikeos.maps.net.PoiSearch
 import com.mikeos.maps.net.PolylineCodec
@@ -54,6 +55,11 @@ data class MapsState(
     val favorites: List<SavedPlace> = emptyList(),
     // A POI tapped directly on the map (Super U, a bus stop, a place label) — awaiting a Directions tap.
     val tappedPlace: TappedPoi? = null,
+    // "Explore nearby" (🔍): parking/fuel/EV around the destination (or the user). Sheet + results.
+    val nearbyOpen: Boolean = false,
+    val nearbyBusy: Boolean = false,
+    val nearbyAnchor: String? = null,          // what we searched around ("Café de Paris" / "you")
+    val nearby: List<NearbySearch.Place> = emptyList(),
 )
 
 /** A feature the user tapped on the map surface, offered for one-tap directions. */
@@ -516,6 +522,55 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             destName = null,
             notice = null,
         )
+    }
+
+    // ---- EXPLORE NEARBY (🔍) — parking/fuel/EV around the destination (or you) ----------------
+
+    /**
+     * Search for **parking + fuel + EV** around the most relevant anchor: the destination if one is
+     * set (active trip, or a previewed route), else the user's current position. The common case is
+     * "I've routed to a venue but need the car park" — so parking is ranked first. Opens the sheet
+     * immediately (with a spinner) and fills it when Overpass answers.
+     */
+    fun exploreNearby() {
+        val a = active.value
+        val (lat, lon, anchor) = when {
+            a != null -> Triple(a.destLat, a.destLon, a.destName)
+            pendingPlace != null -> Triple(pendingPlace!!.lat, pendingPlace!!.lon, pendingPlace!!.name)
+            _location.value != null -> Triple(_location.value!!.lat, _location.value!!.lon, "you")
+            else -> {
+                _state.value = _state.value.copy(notice = "No location yet — can't search nearby.")
+                return
+            }
+        }
+        _state.value = _state.value.copy(
+            nearbyOpen = true, nearbyBusy = true, nearbyAnchor = anchor, nearby = emptyList(),
+        )
+        viewModelScope.launch {
+            val results = NearbySearch.search(lat, lon, radiusM = 400)
+            // Guard against a race with a fast dismiss.
+            if (!_state.value.nearbyOpen) return@launch
+            _state.value = _state.value.copy(nearbyBusy = false, nearby = results)
+        }
+    }
+
+    /** Pick a nearby result (usually a car park) → route there instead. Re-previews from the fix. */
+    fun chooseNearby(p: NearbySearch.Place) {
+        _state.value = _state.value.copy(nearbyOpen = false)
+        if (active.value != null) {
+            // Mid-drive re-routing to a new destination is a bigger change — keep it explicit for now.
+            _state.value = _state.value.copy(notice = "End the trip first to navigate to ${p.name}.")
+            return
+        }
+        suggestJob?.cancel()
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true, notice = "Routing to ${p.name}…")
+            enterPreview(p.name, p.lat, p.lon)
+        }
+    }
+
+    fun dismissNearby() {
+        _state.value = _state.value.copy(nearbyOpen = false)
     }
 
     /** End the active trip (POST end + broadcast trip.ended). */

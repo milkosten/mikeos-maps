@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -44,6 +45,9 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.LocalParking
+import androidx.compose.material.icons.filled.LocalGasStation
+import androidx.compose.material.icons.filled.EvStation
 import androidx.compose.material.icons.filled.Straight
 import androidx.compose.material.icons.filled.TurnLeft
 import androidx.compose.material.icons.filled.TurnRight
@@ -93,6 +97,7 @@ import com.mikeos.maps.nav.ManeuverKind
 import com.mikeos.maps.nav.NavFormat
 import com.mikeos.maps.nav.NavInfo
 import com.mikeos.maps.net.DaemonLocation
+import com.mikeos.maps.net.NearbySearch
 import com.mikeos.maps.net.TripsCloudClient
 import com.mikeos.maps.trips.TripManager
 import com.mikeos.maps.ui.NavigationMap
@@ -243,16 +248,26 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Compass — tap to toggle heading-up (default while driving) ↔ true-north. The red needle
-        // points to real north (rotates opposite the map's bearing).
-        CompassButton(
-            appliedBearing = if (active != null && !northUp) (location?.bearing ?: 0.0) else 0.0,
-            northUp = northUp,
-            onClick = { northUp = !northUp },
+        // Right-side controls, by the compass: 🔍 Explore-nearby (parking/fuel/EV around the
+        // destination or you) stacked above the compass.
+        Column(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(end = 14.dp),
-        )
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            CircleButton(onClick = { vm.exploreNearby() }) {
+                Icon(Icons.Filled.Search, contentDescription = "Search nearby (parking, fuel, EV)", tint = MikeAccent)
+            }
+            Spacer(Modifier.height(12.dp))
+            // Compass — tap to toggle heading-up (default while driving) ↔ true-north. The red needle
+            // points to real north (rotates opposite the map's bearing).
+            CompassButton(
+                appliedBearing = if (active != null && !northUp) (location?.bearing ?: 0.0) else 0.0,
+                northUp = northUp,
+                onClick = { northUp = !northUp },
+            )
+        }
 
         // Top overlay: the turn-by-turn banner while navigating, else the ☰ menu + agent window.
         Box(
@@ -368,6 +383,90 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                 onRemove = { p -> vm.toggleFavorite(p.label, p.lat, p.lon) },
             )
         }
+    }
+
+    if (state.nearbyOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { vm.dismissNearby() },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MikeSurface,
+        ) {
+            NearbyPlacesSheet(
+                anchor = state.nearbyAnchor,
+                busy = state.nearbyBusy,
+                places = state.nearby,
+                onChoose = { p -> vm.chooseNearby(p) },
+            )
+        }
+    }
+}
+
+// ---- Explore nearby (parking / fuel / EV) --------------------------------------------------
+
+@Composable
+private fun NearbyPlacesSheet(
+    anchor: String?,
+    busy: Boolean,
+    places: List<NearbySearch.Place>,
+    onChoose: (NearbySearch.Place) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(0.7f)
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 12.dp),
+    ) {
+        val title = when {
+            anchor == null || anchor == "you" -> "NEAR YOU"
+            else -> "NEAR ${anchor.uppercase()}"
+        }
+        Text(title, color = MikeAccent, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(4.dp))
+        Text("Parking, fuel & charging within 400 m — tap to route there", color = MikeMuted, fontSize = 12.sp)
+        Spacer(Modifier.height(14.dp))
+        when {
+            busy -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
+                CircularProgressIndicator(Modifier.size(18.dp), color = MikeAccent, strokeWidth = 2.dp)
+                Spacer(Modifier.width(12.dp))
+                Text("Searching…", color = MikeMuted, fontSize = 13.sp)
+            }
+            places.isEmpty() -> Text("Nothing found within 400 m.", color = MikeMuted, fontSize = 13.sp,
+                modifier = Modifier.padding(vertical = 12.dp))
+            else -> LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                items(places, key = { "${it.name}|${it.lat}|${it.lon}" }) { p ->
+                    NearbyRow(p, onClick = { onChoose(p) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NearbyRow(p: NearbySearch.Place, onClick: () -> Unit) {
+    val icon = when (p.category) {
+        NearbySearch.Category.PARKING -> Icons.Filled.LocalParking
+        NearbySearch.Category.FUEL -> Icons.Filled.LocalGasStation
+        NearbySearch.Category.CHARGING -> Icons.Filled.EvStation
+        NearbySearch.Category.OTHER -> Icons.Filled.Place
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = MikeAccent)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(p.name, color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val sub = listOfNotNull("${p.distanceM} m", p.detail).joinToString(" · ")
+            Text(sub, color = MikeMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Icon(Icons.Filled.Navigation, contentDescription = "Route here", tint = MikeAccent)
     }
 }
 
