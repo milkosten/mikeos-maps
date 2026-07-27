@@ -143,6 +143,31 @@ object NavGeo {
         return Snap(bestLat, bestLon, bestBearing, best)
     }
 
+    /** The portion of [route] from the vertex nearest the current position onward (the road ahead). */
+    fun routeAhead(route: List<PolylineCodec.LatLon>, curLat: Double, curLon: Double): List<PolylineCodec.LatLon> {
+        if (route.size < 2) return route
+        var nearest = 0; var best = Double.MAX_VALUE
+        for (i in route.indices) {
+            val d = haversineKm(curLat, curLon, route[i].lat, route[i].lon)
+            if (d < best) { best = d; nearest = i }
+        }
+        return route.subList(nearest, route.size)
+    }
+
+    /** Distance (m) ALONG [route] from its start to the point on it nearest to (poiLat,poiLon) — used
+     * to order along-route POIs by drive-past order. Vertex-granularity, plenty for ordering. */
+    fun alongRouteM(route: List<PolylineCodec.LatLon>, poiLat: Double, poiLon: Double): Int {
+        if (route.size < 2) return 0
+        var nearest = 0; var best = Double.MAX_VALUE
+        for (i in route.indices) {
+            val d = haversineKm(poiLat, poiLon, route[i].lat, route[i].lon)
+            if (d < best) { best = d; nearest = i }
+        }
+        var m = 0.0
+        for (i in 0 until nearest) m += haversineKm(route[i].lat, route[i].lon, route[i + 1].lat, route[i + 1].lon) * 1000.0
+        return m.toInt()
+    }
+
     /** Initial bearing (degrees clockwise from north, 0-360) from A to B. */
     fun bearingDeg(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val phi1 = Math.toRadians(lat1); val phi2 = Math.toRadians(lat2)

@@ -20,6 +20,7 @@ import com.mikeos.maps.BuildConfig
 import com.mikeos.maps.nav.NavCamera
 import com.mikeos.maps.nav.NavGeo
 import com.mikeos.maps.net.DaemonLocation
+import com.mikeos.maps.net.NearbySearch
 import com.mikeos.maps.net.MapAnalytics
 import com.mikeos.maps.net.PolylineCodec
 import com.mikeos.maps.ui.theme.MikeAccent
@@ -37,6 +38,7 @@ import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
@@ -67,6 +69,8 @@ fun NavigationMap(
     onUserPan: () -> Unit,
     onPoiTap: (name: String, lat: Double, lon: Double) -> Unit,
     onMapTapEmpty: () -> Unit,
+    poiResults: List<NearbySearch.Place> = emptyList(),
+    onPoiResultTap: (NearbySearch.Place) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val mapView = rememberMapViewWithLifecycle()
@@ -76,6 +80,7 @@ fun NavigationMap(
     val currentOnUserPan by rememberUpdatedState(onUserPan)
     val currentOnPoiTap by rememberUpdatedState(onPoiTap)
     val currentOnMapTapEmpty by rememberUpdatedState(onMapTapEmpty)
+    val currentOnPoiResultTap by rememberUpdatedState(onPoiResultTap)
 
     AndroidView(
         modifier = modifier,
@@ -114,6 +119,17 @@ fun NavigationMap(
                         val box = android.graphics.RectF(
                             screen.x - pad, screen.y - pad, screen.x + pad, screen.y + pad,
                         )
+                        // A tap on one of our Explore result pins → route to that place (checked first).
+                        val poiHit = runCatching { map.queryRenderedFeatures(box, LYR_POIS_DOT) }
+                            .getOrDefault(emptyList()).firstOrNull()
+                        if (poiHit != null) {
+                            val idx = runCatching { poiHit.getNumberProperty("idx")?.toInt() }.getOrNull()
+                            val place = idx?.let { holder.pois.getOrNull(it) }
+                            if (place != null) {
+                                currentOnPoiResultTap(place)
+                                return@addOnMapClickListener true
+                            }
+                        }
                         val feats = runCatching { map.queryRenderedFeatures(box) }.getOrDefault(emptyList())
                         // Prefer a named POINT (a POI/label pin) under the finger; else any named feature.
                         val hit = feats.firstOrNull { featureName(it) != null && it.geometry() is Point }
@@ -143,6 +159,45 @@ fun NavigationMap(
                                 PropertyFactory.lineWidth(6f),
                                 PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                                 PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                            ),
+                        )
+                        // Explore result pins (parking/fuel/food…): a category-coloured dot + name
+                        // label, tappable to route there (see the click listener).
+                        style.addSource(GeoJsonSource(SRC_POIS))
+                        style.addLayer(
+                            CircleLayer(LYR_POIS_DOT, SRC_POIS).withProperties(
+                                PropertyFactory.circleColor(
+                                    Expression.match(
+                                        Expression.get("cat"),
+                                        Expression.literal("PARKING"), Expression.rgb(76, 141, 255),
+                                        Expression.literal("FUEL"), Expression.rgb(255, 152, 0),
+                                        Expression.literal("CHARGING"), Expression.rgb(61, 220, 132),
+                                        Expression.literal("FOOD"), Expression.rgb(255, 90, 122),
+                                        Expression.literal("SHOP"), Expression.rgb(176, 124, 255),
+                                        Expression.literal("REST"), Expression.rgb(38, 198, 218),
+                                        Expression.literal("CASH"), Expression.rgb(255, 194, 75),
+                                        Expression.rgb(154, 165, 177),   // default (OTHER)
+                                    ),
+                                ),
+                                PropertyFactory.circleRadius(9f),
+                                PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+                                PropertyFactory.circleStrokeWidth(2.5f),
+                            ),
+                        )
+                        style.addLayer(
+                            SymbolLayer(LYR_POIS_LABEL, SRC_POIS).withProperties(
+                                PropertyFactory.textField(Expression.get("name")),
+                                // MUST use a font the basemap's glyphs provide (Noto Sans), or the glyph
+                                // fetch fails and kills rendering of the whole source (dots included).
+                                PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+                                PropertyFactory.textSize(11f),
+                                PropertyFactory.textColor(android.graphics.Color.WHITE),
+                                PropertyFactory.textHaloColor(android.graphics.Color.BLACK),
+                                PropertyFactory.textHaloWidth(1.4f),
+                                PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
+                                PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+                                PropertyFactory.textOptional(true),
+                                PropertyFactory.textAllowOverlap(false),
                             ),
                         )
                         // Location puck: soft accuracy ring + solid dot.
@@ -180,12 +235,12 @@ fun NavigationMap(
                                 PropertyFactory.visibility(Property.NONE),
                             ),
                         )
-                        holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg)
+                        holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults)
                     }
                 }
             }
         },
-        update = { holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg) },
+        update = { holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults) },
     )
 }
 
@@ -193,6 +248,7 @@ fun NavigationMap(
 private class NavMapHolder {
     var map: MapLibreMap? = null
     var style: Style? = null
+    var pois: List<NearbySearch.Place> = emptyList()   // current result pins (for tap → Place lookup)
     private var centeredOnce = false
     private var lastFittedRoute: List<PolylineCodec.LatLon>? = null
     // Smoothed speed for the adaptive nav zoom (raw GPS speed is noisy → EMA to avoid zoom jitter).
@@ -207,12 +263,26 @@ private class NavMapHolder {
         navigating: Boolean,
         headingUp: Boolean,
         bearingDeg: Double?,
+        poiResults: List<NearbySearch.Place>,
     ) {
         val s = style ?: return
         val routeGeom: Geometry =
             if (points.size >= 2) LineString.fromLngLats(points.map { Point.fromLngLat(it.lon, it.lat) })
             else EMPTY
         s.getSourceAs<GeoJsonSource>(SRC_ROUTE)?.setGeoJson(routeGeom)
+
+        // Explore result pins (kept here so a map tap can look the tapped pin's Place back up). Built
+        // as a raw GeoJSON string — the object-API FeatureCollection silently failed to render here.
+        pois = poiResults
+        val json = StringBuilder("{\"type\":\"FeatureCollection\",\"features\":[")
+        poiResults.forEachIndexed { i, p ->
+            if (i > 0) json.append(',')
+            val nm = p.name.replace("\\", "\\\\").replace("\"", "\\\"")
+            json.append("{\"type\":\"Feature\",\"properties\":{\"idx\":$i,\"cat\":\"${p.category.name}\",\"name\":\"$nm\"},")
+                .append("\"geometry\":{\"type\":\"Point\",\"coordinates\":[${p.lon},${p.lat}]}}")
+        }
+        json.append("]}")
+        s.getSourceAs<GeoJsonSource>(SRC_POIS)?.setGeoJson(json.toString())
         // SNAP-TO-ROUTE: GPS is ±5-10 m noisy, so while navigating ride the blue line — put the puck
         // on the nearest point ON the route and take its heading from that segment's forward bearing,
         // UNLESS we're genuinely off-route (then show the raw fix and let the reroute logic react).
@@ -297,6 +367,9 @@ private fun featureName(f: Feature): String? {
 
 private const val SRC_ROUTE = "route-src"
 private const val LYR_ROUTE = "route-line"
+private const val SRC_POIS = "pois-src"
+private const val LYR_POIS_DOT = "pois-dot"
+private const val LYR_POIS_LABEL = "pois-label"
 private const val SRC_ME = "me-src"
 private const val LYR_ME_RING = "me-ring"
 private const val LYR_ME_DOT = "me-dot"

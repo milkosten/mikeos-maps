@@ -59,6 +59,8 @@ data class MapsState(
     val nearbyOpen: Boolean = false,
     val nearbyBusy: Boolean = false,
     val nearbyAnchor: String? = null,          // what we searched around ("Café de Paris" / "you")
+    val nearbyMode: String = "dest",           // "dest" (at destination) | "route" (along the road) | "you"
+    val nearbyHasRoute: Boolean = false,       // a route exists → offer the At-destination/Along-route toggle
     val nearby: List<NearbySearch.Place> = emptyList(),
 )
 
@@ -466,6 +468,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             routeEtaMin = route.etaMin,
             destName = name,
             previewing = true,
+            nearby = emptyList(), nearbyOpen = false,   // clear stale Explore pins on a new route
         )
         // Cache the chosen place offline + log the choice (detached, best-effort).
         viewModelScope.launch {
@@ -521,6 +524,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             routeEtaMin = null,
             destName = null,
             notice = null,
+            nearby = emptyList(), nearbyOpen = false,
         )
     }
 
@@ -533,23 +537,49 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
      * immediately (with a spinner) and fills it when Overpass answers.
      */
     fun exploreNearby() {
+        if (active.value == null && pendingPlace == null && _location.value == null) {
+            _state.value = _state.value.copy(notice = "No location yet — can't search nearby.")
+            return
+        }
+        val hasRoute = active.value != null || pendingPlace != null
+        _state.value = _state.value.copy(nearbyOpen = true, nearbyHasRoute = hasRoute)
+        loadNearby(if (hasRoute) "dest" else "you")
+    }
+
+    /**
+     * Load the Explore sheet for a mode: "dest" (parking/POIs AROUND the destination), "route" (strung
+     * ALONG the road ahead, drive-past order), or "you" (around the current position).
+     */
+    fun loadNearby(mode: String) {
         val a = active.value
-        val (lat, lon, anchor) = when {
-            a != null -> Triple(a.destLat, a.destLon, a.destName)
-            pendingPlace != null -> Triple(pendingPlace!!.lat, pendingPlace!!.lon, pendingPlace!!.name)
-            _location.value != null -> Triple(_location.value!!.lat, _location.value!!.lon, "you")
-            else -> {
-                _state.value = _state.value.copy(notice = "No location yet — can't search nearby.")
-                return
-            }
+        val pp = pendingPlace
+        val loc = _location.value
+        val anchorName = when {
+            mode == "route" -> "your route"
+            mode == "you" -> "you"
+            a != null -> a.destName
+            pp != null -> pp.name
+            else -> "there"
         }
         _state.value = _state.value.copy(
-            nearbyOpen = true, nearbyBusy = true, nearbyAnchor = anchor, nearby = emptyList(),
+            nearbyMode = mode, nearbyBusy = true, nearbyAnchor = anchorName, nearby = emptyList(),
         )
         viewModelScope.launch {
-            val results = NearbySearch.search(lat, lon, radiusM = 400)
-            // Guard against a race with a fast dismiss.
-            if (!_state.value.nearbyOpen) return@launch
+            val results = when (mode) {
+                "route" -> {
+                    val pts = _state.value.routePoints
+                    if (loc != null && pts.size >= 2) NearbySearch.searchAlongRoute(pts, loc.lat, loc.lon)
+                    else emptyList()
+                }
+                "you" -> if (loc != null) NearbySearch.search(loc.lat, loc.lon, radiusM = 500) else emptyList()
+                else -> {   // "dest"
+                    val dLat = a?.destLat ?: pp?.lat
+                    val dLon = a?.destLon ?: pp?.lon
+                    if (dLat != null && dLon != null) NearbySearch.search(dLat, dLon, radiusM = 400) else emptyList()
+                }
+            }
+            // Ignore a stale result (sheet dismissed, or the user switched mode meanwhile).
+            if (!_state.value.nearbyOpen || _state.value.nearbyMode != mode) return@launch
             _state.value = _state.value.copy(nearbyBusy = false, nearby = results)
         }
     }
@@ -589,6 +619,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
                 routeKm = null,
                 routeEtaMin = null,
                 destName = null,
+                nearby = emptyList(), nearbyOpen = false,
             )
             _navInfo.value = null
             _guidance.value = null

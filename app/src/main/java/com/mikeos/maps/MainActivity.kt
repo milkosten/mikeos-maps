@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -48,6 +49,10 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.LocalParking
 import androidx.compose.material.icons.filled.LocalGasStation
 import androidx.compose.material.icons.filled.EvStation
+import androidx.compose.material.icons.filled.Restaurant
+import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.Wc
+import androidx.compose.material.icons.filled.LocalAtm
 import androidx.compose.material.icons.filled.Straight
 import androidx.compose.material.icons.filled.TurnLeft
 import androidx.compose.material.icons.filled.TurnRight
@@ -245,6 +250,8 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             onUserPan = { follow = false },
             onPoiTap = { name, lat, lon -> vm.onMapPoiTapped(name, lat, lon) },
             onMapTapEmpty = { vm.dismissTappedPlace() },
+            poiResults = state.nearby,
+            onPoiResultTap = { vm.chooseNearby(it) },
             modifier = Modifier.fillMaxSize(),
         )
 
@@ -395,6 +402,9 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                 anchor = state.nearbyAnchor,
                 busy = state.nearbyBusy,
                 places = state.nearby,
+                mode = state.nearbyMode,
+                hasRoute = state.nearbyHasRoute,
+                onMode = { m -> vm.loadNearby(m) },
                 onChoose = { p -> vm.chooseNearby(p) },
             )
         }
@@ -408,6 +418,9 @@ private fun NearbyPlacesSheet(
     anchor: String?,
     busy: Boolean,
     places: List<NearbySearch.Place>,
+    mode: String,
+    hasRoute: Boolean,
+    onMode: (String) -> Unit,
     onChoose: (NearbySearch.Place) -> Unit,
 ) {
     Column(
@@ -418,21 +431,40 @@ private fun NearbyPlacesSheet(
             .padding(bottom = 12.dp),
     ) {
         val title = when {
+            mode == "route" -> "ALONG YOUR ROUTE"
             anchor == null || anchor == "you" -> "NEAR YOU"
             else -> "NEAR ${anchor.uppercase()}"
         }
         Text(title, color = MikeAccent, fontSize = 13.sp, fontWeight = FontWeight.Bold,
             letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.height(4.dp))
-        Text("Parking, fuel & charging within 400 m — tap to route there", color = MikeMuted, fontSize = 12.sp)
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(10.dp))
+        // With a route, offer the At-destination / Along-route toggle; else a one-line hint.
+        if (hasRoute) {
+            Row(Modifier.fillMaxWidth()) {
+                listOf("dest" to "At destination", "route" to "Along route").forEach { (m, label) ->
+                    val sel = mode == m
+                    Text(
+                        label,
+                        modifier = Modifier.weight(1f).clickable { onMode(m) }.padding(vertical = 10.dp),
+                        textAlign = TextAlign.Center,
+                        color = if (sel) MikeAccent else MikeMuted,
+                        fontSize = 14.sp,
+                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        } else {
+            Text("Parking, fuel, food & more nearby — tap to route there", color = MikeMuted, fontSize = 12.sp)
+            Spacer(Modifier.height(12.dp))
+        }
         when {
             busy -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
                 CircularProgressIndicator(Modifier.size(18.dp), color = MikeAccent, strokeWidth = 2.dp)
                 Spacer(Modifier.width(12.dp))
                 Text("Searching…", color = MikeMuted, fontSize = 13.sp)
             }
-            places.isEmpty() -> Text("Nothing found within 400 m.", color = MikeMuted, fontSize = 13.sp,
+            places.isEmpty() -> Text("Nothing found nearby.", color = MikeMuted, fontSize = 13.sp,
                 modifier = Modifier.padding(vertical = 12.dp))
             else -> LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
                 items(places, key = { "${it.name}|${it.lat}|${it.lon}" }) { p ->
@@ -449,6 +481,10 @@ private fun NearbyRow(p: NearbySearch.Place, onClick: () -> Unit) {
         NearbySearch.Category.PARKING -> Icons.Filled.LocalParking
         NearbySearch.Category.FUEL -> Icons.Filled.LocalGasStation
         NearbySearch.Category.CHARGING -> Icons.Filled.EvStation
+        NearbySearch.Category.FOOD -> Icons.Filled.Restaurant
+        NearbySearch.Category.SHOP -> Icons.Filled.ShoppingCart
+        NearbySearch.Category.REST -> Icons.Filled.Wc
+        NearbySearch.Category.CASH -> Icons.Filled.LocalAtm
         NearbySearch.Category.OTHER -> Icons.Filled.Place
     }
     Row(
@@ -463,7 +499,10 @@ private fun NearbyRow(p: NearbySearch.Place, onClick: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Text(p.name, color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val sub = listOfNotNull("${p.distanceM} m", p.detail).joinToString(" · ")
+            // Along-route results show drive-past distance ("in 3.2 km"); point results show straight-line.
+            val distLabel = p.alongM?.let { if (it >= 1000) "in ${"%.1f".format(it / 1000.0)} km" else "in $it m" }
+                ?: "${p.distanceM} m"
+            val sub = listOfNotNull(distLabel, p.detail).joinToString(" · ")
             Text(sub, color = MikeMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Icon(Icons.Filled.Navigation, contentDescription = "Route here", tint = MikeAccent)
