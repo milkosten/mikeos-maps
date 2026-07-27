@@ -46,6 +46,8 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material3.Switch
 import androidx.compose.material.icons.filled.LocalParking
 import androidx.compose.material.icons.filled.LocalGasStation
 import androidx.compose.material.icons.filled.EvStation
@@ -126,6 +128,21 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { }
 
+    // MikeStreet dashboard capture (opt-in). CAMERA is requested only when the user switches it on.
+    private lateinit var streetCapture: com.mikeos.maps.street.StreetCapture
+    private val cameraPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) streetCapture.refresh() }
+
+    private fun onStreetToggle(on: Boolean) {
+        com.mikeos.maps.street.MikeStreet.setEnabled(this, on)
+        if (on && !streetCapture.hasCameraPermission()) {
+            cameraPermLauncher.launch(android.Manifest.permission.CAMERA)
+        } else {
+            streetCapture.refresh()
+        }
+    }
+
     // Inbound deep-link destination (extras or geo:), consumed once by the composable.
     private val pendingDest = androidx.compose.runtime.mutableStateOf<DestReq?>(null)
 
@@ -137,12 +154,15 @@ class MainActivity : ComponentActivity() {
         requestPermissions()
         // Embed the shared MikeAgent runtime (soul + nav skills + heartbeat + live hive).
         MapsMikeAgent.install(this)
+        // MikeStreet capture (P1) — opt-in dashboard imagery.
+        com.mikeos.maps.street.MikeStreet.init(this)
+        streetCapture = com.mikeos.maps.street.StreetCapture(this)
         pendingDest.value = parseDest(intent)
 
         setContent {
             MikeOsTheme {
                 val vm: MapsViewModel = viewModel()
-                MapFirstScreen(vm)
+                MapFirstScreen(vm, onStreetToggle = ::onStreetToggle)
                 val dest = pendingDest.value
                 androidx.compose.runtime.LaunchedEffect(dest) {
                     if (dest != null) {
@@ -203,6 +223,16 @@ class MainActivity : ComponentActivity() {
         HeartbeatService.stop(this)
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::streetCapture.isInitialized) streetCapture.onResume()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (::streetCapture.isInitialized) streetCapture.onPause()
+    }
+
     private fun requestPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
@@ -212,7 +242,10 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MapFirstScreen(vm: MapsViewModel) {
+private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit = {}) {
+    val streetEnabled by com.mikeos.maps.street.MikeStreet.enabled.collectAsStateWithLifecycle()
+    val streetCapturing by com.mikeos.maps.street.MikeStreet.capturing.collectAsStateWithLifecycle()
+    val streetFrames by com.mikeos.maps.street.MikeStreet.frameCount.collectAsStateWithLifecycle()
     val state by vm.state.collectAsStateWithLifecycle()
     val active by vm.active.collectAsStateWithLifecycle()
     val location by vm.location.collectAsStateWithLifecycle()
@@ -304,6 +337,17 @@ private fun MapFirstScreen(vm: MapsViewModel) {
             }
         }
 
+        // MikeStreet: a small REC pill while it's capturing dashboard frames.
+        if (streetCapturing) {
+            StreetRecPill(
+                frames = streetFrames,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 64.dp),
+            )
+        }
+
         // Bottom overlay: driving HUD while navigating, else a slim "Where to?" bar.
         Column(
             modifier = Modifier
@@ -371,6 +415,8 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                     menuOpen = false
                 },
                 onToggleFavorite = { label, lat, lon -> vm.toggleFavorite(label, lat, lon) },
+                streetEnabled = streetEnabled,
+                onStreetToggle = onStreetToggle,
             )
         }
     }
@@ -408,6 +454,23 @@ private fun MapFirstScreen(vm: MapsViewModel) {
                 onChoose = { p -> vm.chooseNearby(p) },
             )
         }
+    }
+}
+
+// ---- MikeStreet REC indicator --------------------------------------------------------------
+
+@Composable
+private fun StreetRecPill(frames: Int, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(MikeSurface.copy(alpha = 0.92f))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(9.dp).clip(CircleShape).background(MikeRed))
+        Spacer(Modifier.width(8.dp))
+        Text("MikeStreet · $frames", color = MikeOnSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -720,6 +783,8 @@ private fun MenuSheet(
     onResume: (String) -> Unit,
     onChoose: (Suggestion) -> Unit,
     onToggleFavorite: (label: String, lat: Double?, lon: Double?) -> Unit,
+    streetEnabled: Boolean = false,
+    onStreetToggle: (Boolean) -> Unit = {},
 ) {
     // The text field OWNS its text + cursor (TextFieldValue), full stop. It is seeded once from
     // state.query when the sheet opens (this composable only exists while menuOpen == true, so it
@@ -774,6 +839,21 @@ private fun MenuSheet(
                 if (state.busy) CircularProgressIndicator(Modifier.size(16.dp), color = MikeBg, strokeWidth = 2.dp)
                 else { Icon(Icons.Filled.Search, contentDescription = null); Text("Search", fontWeight = FontWeight.Bold) }
             }
+        }
+
+        // MikeStreet opt-in: contribute dashboard street imagery to the Mike ecosystem.
+        Spacer(Modifier.height(14.dp))
+        Row(
+            Modifier.fillMaxWidth().clickable { onStreetToggle(!streetEnabled) }.padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.CameraAlt, contentDescription = null, tint = MikeAccent)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Give data to Mike Ecosystem", color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                Text("Capture street imagery from the dashboard while you drive", color = MikeMuted, fontSize = 12.sp)
+            }
+            Switch(checked = streetEnabled, onCheckedChange = { onStreetToggle(it) })
         }
 
         // Type-ahead suggestions (history first, then places) — tap to preview, tap ★ to save.

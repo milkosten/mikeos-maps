@@ -14,8 +14,8 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 31
-        versionName = "0.10.0-explore-along-route"
+        versionCode = 32
+        versionName = "0.11.0-mikestreet-p1"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
         buildConfigField("String", "DAEMON_BASE_URL", "\"https://127.0.0.1:7743\"")
@@ -115,6 +115,11 @@ dependencies {
 
     // Background heartbeat
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    // CameraX — MikeStreet dashboard capture (ImageCapture; no preview surface needed).
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
 
     // MapLibre GL Native — the FOSS vector map engine (renders the mikeos-basemap OSM tiles as a
     // real map under the route). Its HTTP stack is pointed at our DoH client so tiles resolve on

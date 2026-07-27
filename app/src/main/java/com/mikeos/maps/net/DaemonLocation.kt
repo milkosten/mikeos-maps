@@ -91,6 +91,24 @@ object DaemonLocation {
         }
     }
 
+    /** The RAW daemon location object (all fields it has: altitude, accuracy, satellites, city, …) for
+     * max-detail metadata (MikeStreet .gps.json). Null if unreachable. Never throws. */
+    suspend fun currentRaw(): JSONObject? = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("${BuildConfig.DAEMON_BASE_URL}/api/location")
+            .header("Accept", "application/json").get().build()
+        try {
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val o = runCatching { JSONObject(resp.body?.string().orEmpty()) }.getOrNull()
+                    ?: return@withContext null
+                o.optJSONObject("location") ?: o
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /** Speed in km/h from the previous fix (haversine / dt), or null if no prior fix / dt too small. */
     private fun derivedSpeedKmh(lat: Double, lon: Double, nowMs: Long): Double? {
         val pLat = lastLat ?: return null
