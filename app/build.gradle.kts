@@ -60,6 +60,12 @@ android {
         // download. arm64-v8a covers modern devices; armeabi-v7a keeps older 32-bit ones working.
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // Opt-in x86_64 for the Cuttlefish test bench (virtual phones are x86_64). MapLibre's
+            // native render engine does NOT load under Cuttlefish's ARM translation (arm64-v8a is
+            // advertised but the JNI backing is absent → UnsatisfiedLinkError on map init), so a
+            // bench build needs the real x86_64 .so. Enable with -Pbenchx86. NEVER OTA-publish a
+            // benchx86 APK — the store APK stays arm-only to keep the cellular download ~half.
+            if (project.hasProperty("benchx86")) abiFilters += "x86_64"
         }
     }
 
