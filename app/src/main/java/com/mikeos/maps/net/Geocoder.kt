@@ -32,7 +32,7 @@ object Geocoder {
     // address guesses (they crowd out real POIs like "Super U"). Below it, Nominatim fills the gap.
     private const val PHOTON_MIN = 4
 
-    data class Place(val name: String, val lat: Double, val lon: Double)
+    data class Place(val name: String, val lat: Double, val lon: Double, val category: String? = null)
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .dns(Doh.dns)
@@ -117,7 +117,9 @@ object Geocoder {
                     val coords = f.optJSONObject("geometry")?.optJSONArray("coordinates") ?: return@mapNotNull null
                     val lon = coords.optDouble(0).takeIf { !it.isNaN() } ?: return@mapNotNull null
                     val lat = coords.optDouble(1).takeIf { !it.isNaN() } ?: return@mapNotNull null
-                    Place(name = photonLabel(f.optJSONObject("properties")), lat = lat, lon = lon)
+                    val props = f.optJSONObject("properties")
+                    val cat = props?.optString("osm_value")?.takeUnless { it.isBlank() }
+                    Place(name = photonLabel(props), lat = lat, lon = lon, category = cat)
                 }
             }
         } catch (e: Exception) {
@@ -134,8 +136,7 @@ object Geocoder {
         val street = p.optString("street").takeUnless { it.isBlank() }
         val city = p.optString("city").takeUnless { it.isBlank() }
             ?: p.optString("district").takeUnless { it.isBlank() }
-        val region = p.optString("state").takeUnless { it.isBlank() }
-        val country = p.optString("country").takeUnless { it.isBlank() }
+            ?: p.optString("country").takeUnless { it.isBlank() }   // fallback locator (e.g. Monaco)
         val head = when {
             // A named POI (Super U, a café, a station) → show its NAME. This was the bug behind
             // "SuperU → zero results": a Super U store also has a street ("Rue du 8 Mai"), and labelling
@@ -143,10 +144,11 @@ object Geocoder {
             // wasn't found. Name wins; the street is only the label for an address that HAS no name.
             name != null -> name
             street != null -> listOfNotNull(house, street).joinToString(" ")
-            else -> city ?: country ?: "?"
+            else -> city ?: "?"
         }
-        return listOfNotNull(head, city.takeIf { head != city }, region, country)
-            .distinct().joinToString(", ")
+        // "Name, City" — drop region + country: when you're finding a place nearby, "Provence-Alpes-
+        // Côte d'Azur, France" is noise. The city/neighbourhood is the only locating word that helps.
+        return listOfNotNull(head, city.takeIf { head != city }).distinct().joinToString(", ")
     }
 
     private suspend fun run(url: String): List<Place> = withContext(Dispatchers.IO) {

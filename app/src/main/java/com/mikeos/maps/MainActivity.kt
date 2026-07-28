@@ -48,6 +48,9 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material.icons.filled.LocalParking
@@ -110,6 +113,7 @@ import com.mikeos.maps.net.NearbySearch
 import com.mikeos.maps.net.TripsCloudClient
 import com.mikeos.maps.trips.TripManager
 import com.mikeos.maps.ui.NavigationMap
+import com.mikeos.maps.nav.NavGeo
 import com.mikeos.maps.ui.theme.MikeAccent
 import com.mikeos.maps.ui.theme.MikeBg
 import com.mikeos.maps.ui.theme.MikeGreen
@@ -431,6 +435,8 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
                 onStreetToggle = onStreetToggle,
                 mapThemeMode = mapThemeMode,
                 onMapThemeChange = { com.mikeos.maps.ui.MapTheme.setMode(context, it) },
+                nearLat = location?.lat,
+                nearLon = location?.lon,
             )
         }
     }
@@ -801,6 +807,8 @@ private fun MenuSheet(
     onStreetToggle: (Boolean) -> Unit = {},
     mapThemeMode: com.mikeos.maps.ui.MapTheme.Mode = com.mikeos.maps.ui.MapTheme.Mode.AUTO,
     onMapThemeChange: (com.mikeos.maps.ui.MapTheme.Mode) -> Unit = {},
+    nearLat: Double? = null,
+    nearLon: Double? = null,
 ) {
     // The text field OWNS its text + cursor (TextFieldValue), full stop. It is seeded once from
     // state.query when the sheet opens (this composable only exists while menuOpen == true, so it
@@ -814,6 +822,7 @@ private fun MenuSheet(
     // the input unusable: "l'ange gardien" → "l'ange gein". The field is local; the VM never feeds
     // text back into it.
     var field by remember { mutableStateOf(TextFieldValue(state.query, TextRange(state.query.length))) }
+    var settingsOpen by remember { mutableStateOf(false) }
     Column(
         Modifier
             .fillMaxWidth()
@@ -857,81 +866,116 @@ private fun MenuSheet(
             }
         }
 
-        // MikeStreet opt-in: contribute dashboard street imagery to the Mike ecosystem.
-        Spacer(Modifier.height(14.dp))
-        Row(
-            Modifier.fillMaxWidth().clickable { onStreetToggle(!streetEnabled) }.padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Filled.CameraAlt, contentDescription = null, tint = MikeAccent)
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text("Give data to Mike Ecosystem", color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                Text("Capture street imagery from the dashboard while you drive", color = MikeMuted, fontSize = 12.sp)
-            }
-            Switch(checked = streetEnabled, onCheckedChange = { onStreetToggle(it) })
-        }
-
-        // Map appearance: Auto follows the phone's ambient-light sensor (light in a bright car, dark at
-        // night); Light / Dark force it.
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.Brightness6, contentDescription = null, tint = MikeAccent)
-            Spacer(Modifier.width(14.dp))
-            Text("Map appearance", color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-        }
-        Spacer(Modifier.height(6.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            com.mikeos.maps.ui.MapTheme.Mode.entries.forEach { m ->
-                val selected = m == mapThemeMode
-                val label = when (m) {
-                    com.mikeos.maps.ui.MapTheme.Mode.AUTO -> "Auto"
-                    com.mikeos.maps.ui.MapTheme.Mode.LIGHT -> "Light"
-                    com.mikeos.maps.ui.MapTheme.Mode.DARK -> "Dark"
+        if (state.query.isNotBlank()) {
+            // RESULTS-FIRST — the instant you type, results are the hero. No settings, no history in
+            // the way; the one thing you want (the places) sits right under the search box.
+            when {
+                state.suggestions.isNotEmpty() -> {
+                    Spacer(Modifier.height(10.dp))
+                    state.suggestions.forEach { s ->
+                        val saved = state.favorites.any { it.label == s.label }
+                        SuggestionRow(
+                            s = s, saved = saved, nearLat = nearLat, nearLon = nearLon,
+                            onClick = { onChoose(s) },
+                            onToggleSave = { onToggleFavorite(s.label, s.lat, s.lon) },
+                        )
+                    }
                 }
-                Surface(
-                    onClick = { onMapThemeChange(m) },
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (selected) MikeAccent else MikeSurface,
-                    contentColor = if (selected) MikeBg else MikeOnSurface,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        label, textAlign = TextAlign.Center, fontSize = 13.sp,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
-                    )
+                state.busy -> {
+                    Spacer(Modifier.height(18.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), color = MikeAccent, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Searching…", color = MikeMuted, fontSize = 14.sp)
+                    }
+                }
+                else -> {
+                    Spacer(Modifier.height(18.dp))
+                    Text(state.notice ?: "No places found.", color = MikeMuted, fontSize = 14.sp)
                 }
             }
-        }
+        } else {
+            // DEFAULT (nothing typed): recent destinations, then settings tucked behind a gear.
+            Spacer(Modifier.height(18.dp))
+            val trips = state.history.distinctBy { it.destName }   // collapse repeated destinations
+            Text("RECENT", color = MikeMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+            Spacer(Modifier.height(6.dp))
+            if (trips.isEmpty()) {
+                Text("No trips yet. Search a place to go.", color = MikeMuted, fontSize = 13.sp)
+            } else {
+                trips.forEach { t -> TripRow(t, onClick = { t.destName?.let { onResume(it) } }) }
+            }
 
-        // Type-ahead suggestions (history first, then places) — tap to preview, tap ★ to save.
-        if (state.suggestions.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            state.suggestions.forEach { s ->
-                val saved = state.favorites.any { it.label == s.label }
-                SuggestionRow(
-                    s = s,
-                    saved = saved,
-                    onClick = { onChoose(s) },
-                    onToggleSave = { onToggleFavorite(s.label, s.lat, s.lon) },
+            // Settings live OUT of the search flow — behind a gear, collapsed by default.
+            Spacer(Modifier.height(20.dp))
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                    .clickable { settingsOpen = !settingsOpen }.padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Settings, contentDescription = null, tint = MikeMuted)
+                Spacer(Modifier.width(14.dp))
+                Text("Settings", color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                Icon(if (settingsOpen) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = null, tint = MikeMuted)
+            }
+            if (settingsOpen) {
+                SettingsSection(
+                    streetEnabled = streetEnabled, onStreetToggle = onStreetToggle,
+                    mapThemeMode = mapThemeMode, onMapThemeChange = onMapThemeChange,
                 )
             }
         }
+    }
+}
 
-        // (Saved places live behind the ★ button top-right — a dedicated, searchable, scalable screen.)
-
-        Spacer(Modifier.height(22.dp))
-        Text("TRIP HISTORY · ${state.history.size}", color = MikeMuted, fontSize = 11.sp,
-            fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-        Spacer(Modifier.height(8.dp))
-        if (state.history.isEmpty()) {
-            Text("No trips yet. Route somewhere to start recording.", color = MikeMuted, fontSize = 13.sp)
-        } else {
-            Text("Tap a trip to drive it again.", color = MikeMuted, fontSize = 11.sp)
-            Spacer(Modifier.height(4.dp))
-            state.history.forEach { t ->
-                TripRow(t, onClick = { t.destName?.let { onResume(it) } })
+/** The two settings that used to clutter the search flow — now behind the gear. */
+@Composable
+private fun SettingsSection(
+    streetEnabled: Boolean,
+    onStreetToggle: (Boolean) -> Unit,
+    mapThemeMode: com.mikeos.maps.ui.MapTheme.Mode,
+    onMapThemeChange: (com.mikeos.maps.ui.MapTheme.Mode) -> Unit,
+) {
+    Spacer(Modifier.height(6.dp))
+    Row(
+        Modifier.fillMaxWidth().clickable { onStreetToggle(!streetEnabled) }.padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.CameraAlt, contentDescription = null, tint = MikeAccent)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Give data to Mike Ecosystem", color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Text("Capture street imagery from the dashboard while you drive", color = MikeMuted, fontSize = 12.sp)
+        }
+        Switch(checked = streetEnabled, onCheckedChange = { onStreetToggle(it) })
+    }
+    Spacer(Modifier.height(10.dp))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.Brightness6, contentDescription = null, tint = MikeAccent)
+        Spacer(Modifier.width(14.dp))
+        Text("Map appearance", color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+    }
+    Spacer(Modifier.height(6.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        com.mikeos.maps.ui.MapTheme.Mode.entries.forEach { m ->
+            val selected = m == mapThemeMode
+            val label = when (m) {
+                com.mikeos.maps.ui.MapTheme.Mode.AUTO -> "Auto"
+                com.mikeos.maps.ui.MapTheme.Mode.LIGHT -> "Light"
+                com.mikeos.maps.ui.MapTheme.Mode.DARK -> "Dark"
+            }
+            Surface(
+                onClick = { onMapThemeChange(m) },
+                shape = RoundedCornerShape(12.dp),
+                color = if (selected) MikeAccent else MikeSurface,
+                contentColor = if (selected) MikeBg else MikeOnSurface,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(
+                    label, textAlign = TextAlign.Center, fontSize = 13.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                )
             }
         }
     }
@@ -940,7 +984,23 @@ private fun MenuSheet(
 // ---- Small reusables -----------------------------------------------------------------------
 
 @Composable
-private fun SuggestionRow(s: Suggestion, saved: Boolean, onClick: () -> Unit, onToggleSave: () -> Unit) {
+private fun SuggestionRow(
+    s: Suggestion, saved: Boolean, nearLat: Double?, nearLon: Double?,
+    onClick: () -> Unit, onToggleSave: () -> Unit,
+) {
+    // A place answers the human's questions in one glance: what it is (icon), which one it is (name),
+    // and — the thing that decides everything — how far + which way it is. Region/country dropped.
+    val name = s.label.substringBefore(",").trim().ifBlank { s.label }
+    val where = s.label.split(",").getOrNull(1)?.trim().orEmpty()   // just the town — drop any region/country tail
+    val distKm = if (nearLat != null && nearLon != null && s.lat != null && s.lon != null)
+        NavGeo.haversineKm(nearLat, nearLon, s.lat, s.lon) else null
+    val dir = if (distKm != null) NavGeo.compass(NavGeo.bearingDeg(nearLat!!, nearLon!!, s.lat!!, s.lon!!)) else null
+    val sub = listOfNotNull(
+        distKm?.let { fmtDistance(it) },
+        dir,
+        where.takeIf { it.isNotBlank() },
+    ).joinToString(" · ")
+
     Row(
         Modifier
             .fillMaxWidth()
@@ -949,17 +1009,18 @@ private fun SuggestionRow(s: Suggestion, saved: Boolean, onClick: () -> Unit, on
             .padding(vertical = 10.dp, horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            if (s.fromHistory) Icons.Filled.History else Icons.Filled.Place,
-            contentDescription = null,
-            tint = if (s.fromHistory) MikeAccent else MikeMuted,
-            modifier = Modifier.size(20.dp),
-        )
+        Box(
+            Modifier.size(38.dp).clip(RoundedCornerShape(10.dp)).background(MikeSurfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) { Text(if (s.fromHistory) "🕘" else categoryEmoji(s.category), fontSize = 18.sp) }
         Spacer(Modifier.size(12.dp))
-        Text(
-            s.label, color = MikeOnSurface, fontSize = 14.sp, maxLines = 2,
-            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-        )
+        Column(Modifier.weight(1f)) {
+            Text(name, color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (sub.isNotBlank()) {
+                Text(sub, color = MikeMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
         // ★ save/unsave — only for suggestions we have coordinates for.
         if (s.lat != null && s.lon != null) {
             IconButton(onClick = onToggleSave) {
@@ -971,6 +1032,40 @@ private fun SuggestionRow(s: Suggestion, saved: Boolean, onClick: () -> Unit, on
             }
         }
     }
+}
+
+/** Human distance: metres under 1 km, one decimal under 10 km, whole km beyond. */
+private fun fmtDistance(km: Double): String = when {
+    km < 1.0 -> "${(km * 1000).roundToInt()} m"
+    km < 10.0 -> "${"%.1f".format(km)} km"
+    else -> "${km.roundToInt()} km"
+}
+
+/** A glanceable icon for an OSM category so you can tell a store from a street. */
+private fun categoryEmoji(cat: String?): String = when (cat?.lowercase()) {
+    "supermarket", "convenience", "grocery", "greengrocer", "department_store", "mall" -> "🛒"
+    "fuel", "gas" -> "⛽"
+    "charging_station" -> "🔌"
+    "restaurant", "fast_food", "food_court" -> "🍽️"
+    "cafe", "coffee" -> "☕"
+    "bar", "pub", "biergarten" -> "🍺"
+    "bakery" -> "🥖"
+    "pharmacy", "chemist" -> "💊"
+    "hospital", "clinic", "doctors" -> "🏥"
+    "parking", "parking_space", "parking_entrance" -> "🅿️"
+    "hotel", "guest_house", "hostel", "motel" -> "🏨"
+    "bank", "atm", "bureau_de_change" -> "🏧"
+    "school", "university", "college", "kindergarten" -> "🎓"
+    "bus_stop", "bus_station", "station", "stop", "halt", "tram_stop" -> "🚉"
+    "aerodrome", "airport", "terminal" -> "✈️"
+    "beach", "beach_resort" -> "🏖️"
+    "park", "garden", "playground" -> "🌳"
+    "hairdresser", "beauty" -> "💈"
+    "post_office" -> "📮"
+    "police" -> "🚓"
+    "place_of_worship", "church" -> "⛪"
+    "city", "town", "village", "hamlet", "suburb", "neighbourhood", "locality" -> "🏘️"
+    else -> "📍"
 }
 
 /**
@@ -1119,12 +1214,8 @@ private fun TripRow(t: TripsCloudClient.Trip, onClick: () -> Unit) {
         ) { Text("🚗", fontSize = 16.sp) }
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
             Text(t.destName ?: "(trip)", color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-            val bits = buildList {
-                t.km?.let { add("${"%.1f".format(it)} km") }
-                t.avgKmh?.let { add("avg ${"%.0f".format(it)} km/h") }
-                t.sampleCount?.let { add("$it samples") }
-            }
-            if (bits.isNotEmpty()) Text(bits.joinToString(" · "), color = MikeMuted, fontSize = 12.sp, maxLines = 1)
+            // Just the trip length — avg km/h and sample counts are trivia when re-picking a destination.
+            t.km?.let { Text("${"%.1f".format(it)} km", color = MikeMuted, fontSize = 12.sp, maxLines = 1) }
         }
         t.durationMin?.let {
             Text("${"%.0f".format(it)} min", color = MikeMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)

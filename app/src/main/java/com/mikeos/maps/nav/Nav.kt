@@ -177,6 +177,11 @@ object NavGeo {
         return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
     }
 
+    private val COMPASS = arrayOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+    /** 8-point compass abbreviation for a bearing in degrees (0 = North). */
+    fun compass(bearingDeg: Double): String = COMPASS[(((bearingDeg + 22.5) % 360.0) / 45.0).toInt() % 8]
+
     /**
      * Remaining route distance (km) from the current position to the end of [route]: snap to the
      * nearest route vertex, then sum the segment lengths from there onward (plus the hop from the

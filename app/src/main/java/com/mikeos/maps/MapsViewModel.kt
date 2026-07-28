@@ -32,6 +32,7 @@ data class Suggestion(
     val lat: Double?,
     val lon: Double?,
     val fromHistory: Boolean,
+    val category: String? = null,   // OSM value (supermarket, cafe, fuel…) → row icon
 )
 
 /** The routing / active-trip / history screen state. */
@@ -288,9 +289,13 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         // Debounced type-ahead — offline cache + history show instantly, online candidates follow.
+        // Mark busy so the UI shows "Searching…" instead of flashing "No places found" while the
+        // (possibly slow) online geocoder is still working.
         suggestJob = viewModelScope.launch {
             delay(SUGGEST_DEBOUNCE_MS)
-            _state.value = _state.value.copy(suggestions = suggestFor(query))
+            _state.value = _state.value.copy(busy = true)
+            val sugg = suggestFor(query)
+            _state.value = _state.value.copy(suggestions = sugg, busy = false)
         }
     }
 
@@ -342,7 +347,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         } else emptyList()
         val online = runCatching { Geocoder.search(query, 8, near?.lat, near?.lon) }
             .getOrDefault(emptyList())
-            .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
+            .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false, category = it.category) }
         fun shortKey(s: Suggestion) = s.label.substringBefore(",").trim().lowercase()
         fun distKm(s: Suggestion) =
             if (near != null && s.lat != null && s.lon != null) NavGeo.haversineKm(near.lat, near.lon, s.lat, s.lon)
