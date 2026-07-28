@@ -446,7 +446,8 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
      * the search field + suggestions so the next destination starts blank. Shared by [preview] and
      * [chooseSuggestion]. Assumes busy=true was already set by the caller.
      */
-    private suspend fun enterPreview(name: String, lat: Double, lon: Double) {
+    private suspend fun enterPreview(nameRaw: String, lat: Double, lon: Double) {
+        val name = PlacesRepo.cleanLabel(nameRaw)   // drop any region/country tail before it's shown/stored
         _state.value = _state.value.copy(notice = "Reading your location…")
         val fix = trips.currentFix()
         if (fix == null) {

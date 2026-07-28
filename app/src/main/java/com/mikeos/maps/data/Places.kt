@@ -43,6 +43,12 @@ interface PlacesDao {
     @Query("SELECT * FROM places WHERE label = :label LIMIT 1")
     suspend fun byLabel(label: String): SavedPlace?
 
+    @Query("SELECT * FROM places")
+    suspend fun all(): List<SavedPlace>
+
+    @Query("DELETE FROM places WHERE label = :label")
+    suspend fun deleteByLabel(label: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(p: SavedPlace)
 }
@@ -72,9 +78,22 @@ abstract class PlacesDb : RoomDatabase() {
 /** The offline places cache: save on navigate, fuzzy-search on type. */
 object PlacesRepo {
 
+    /**
+     * Human place label — drops the region + country tail ("…, Provence-Alpes-Côte d'Azur, France")
+     * that's just noise when you're finding a place nearby. A full address keeps its house/street/city;
+     * only the trailing two administrative parts are removed.
+     */
+    fun cleanLabel(label: String): String {
+        val parts = label.split(",").map { it.trim() }.filter { it.isNotBlank() }
+        if (parts.isEmpty()) return label.trim()
+        val kept = if (parts.size >= 4) parts.dropLast(2) else parts   // drop region + country
+        return kept.joinToString(", ")
+    }
+
     /** Record (or bump) a place Mike navigated to. Preserves the ⭐ favorite flag if already set. */
-    suspend fun save(context: Context, label: String, lat: Double, lon: Double) = withContext(Dispatchers.IO) {
+    suspend fun save(context: Context, labelRaw: String, lat: Double, lon: Double) = withContext(Dispatchers.IO) {
         val dao = PlacesDb.get(context).dao()
+        val label = cleanLabel(labelRaw)
         val short = label.substringBefore(",").trim().ifBlank { label }
         val existing = dao.byLabel(label)
         dao.upsert(
@@ -96,6 +115,32 @@ object PlacesRepo {
         PlacesDb.get(context).dao().favorites()
     }
 
+    /**
+     * One-time (idempotent) cleanup: rewrite existing rows whose label still carries the region/country
+     * tail into the clean "…, City" form, so old saved/history places match the new results and the
+     * route-preview panel stops showing "…, Provence-Alpes-Côte d'Azur, France". Merges on collision
+     * (keeps the favorite flag + higher use count). Safe to run on every start.
+     */
+    suspend fun migrateLabels(context: Context) = withContext(Dispatchers.IO) {
+        val dao = PlacesDb.get(context).dao()
+        for (p in dao.all()) {
+            val clean = cleanLabel(p.label)
+            if (clean == p.label || clean.isBlank()) continue
+            val existing = dao.byLabel(clean)   // a clean-labelled row may already exist → merge
+            dao.deleteByLabel(p.label)
+            dao.upsert(
+                p.copy(
+                    label = clean,
+                    shortName = clean.substringBefore(",").trim().ifBlank { clean },
+                    favorite = p.favorite || (existing?.favorite ?: false),
+                    kind = p.kind ?: existing?.kind,
+                    useCount = maxOf(p.useCount, existing?.useCount ?: 0),
+                    lastUsedMs = maxOf(p.lastUsedMs, existing?.lastUsedMs ?: 0L),
+                ),
+            )
+        }
+    }
+
     /** Is this exact place currently a favorite? */
     suspend fun isFavorite(context: Context, label: String): Boolean = withContext(Dispatchers.IO) {
         PlacesDb.get(context).dao().byLabel(label)?.favorite == true
@@ -106,10 +151,11 @@ object PlacesRepo {
      * resulting row. [kind] defaults to "favorite" when saving.
      */
     suspend fun setFavorite(
-        context: Context, label: String, lat: Double, lon: Double,
+        context: Context, labelRaw: String, lat: Double, lon: Double,
         favorite: Boolean, kind: String? = null,
     ): SavedPlace = withContext(Dispatchers.IO) {
         val dao = PlacesDb.get(context).dao()
+        val label = cleanLabel(labelRaw)
         val short = label.substringBefore(",").trim().ifBlank { label }
         val existing = dao.byLabel(label)
         val row = SavedPlace(

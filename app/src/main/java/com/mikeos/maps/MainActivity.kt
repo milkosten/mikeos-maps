@@ -113,6 +113,8 @@ import com.mikeos.maps.net.NearbySearch
 import com.mikeos.maps.net.TripsCloudClient
 import com.mikeos.maps.trips.TripManager
 import com.mikeos.maps.ui.NavigationMap
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import com.mikeos.maps.nav.NavGeo
 import com.mikeos.maps.ui.theme.MikeAccent
 import com.mikeos.maps.ui.theme.MikeBg
@@ -168,6 +170,10 @@ class MainActivity : ComponentActivity() {
         // Map appearance + ambient-light auto light/dark.
         com.mikeos.maps.ui.MapTheme.init(this)
         lightSensor = com.mikeos.maps.ui.LightSensor(this)
+        // One-time: clean the region/country tail off old saved/history place labels.
+        lifecycleScope.launch {
+            runCatching { com.mikeos.maps.data.PlacesRepo.migrateLabels(this@MainActivity) }
+        }
         pendingDest.value = parseDest(intent)
 
         setContent {
