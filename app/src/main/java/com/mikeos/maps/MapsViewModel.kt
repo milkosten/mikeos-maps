@@ -16,6 +16,7 @@ import com.mikeos.maps.net.NearbySearch
 import com.mikeos.maps.net.OfflinePrefetch
 import com.mikeos.maps.net.PoiSearch
 import com.mikeos.maps.net.PolylineCodec
+import com.mikeos.maps.net.SpeedLimit
 import com.mikeos.maps.net.TripsCloudClient
 import com.mikeos.maps.trips.TripManager
 import kotlinx.coroutines.Job
@@ -85,6 +86,15 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     /** The live driving HUD readout (speed / remaining / ETA); null when not navigating. */
     private val _navInfo = MutableStateFlow<NavInfo?>(null)
     val navInfo: StateFlow<NavInfo?> = _navInfo.asStateFlow()
+
+    // Posted speed limit (km/h) for the road you're on — null when unknown/untagged. Refreshed as you
+    // move (throttled), so the HUD can show the limit sign + warn when you're over it.
+    private val _speedLimit = MutableStateFlow<Int?>(null)
+    val speedLimit: StateFlow<Int?> = _speedLimit.asStateFlow()
+    private var slLastLat = 0.0
+    private var slLastLon = 0.0
+    private var slLastAtMs = 0L
+    private var slJob: kotlinx.coroutines.Job? = null
 
     /** The live turn-by-turn guidance (next maneuver); null when not navigating. */
     private val _guidance = MutableStateFlow<Guidance?>(null)
@@ -159,6 +169,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
                     // Keep ~100 km around Mike cached so the map is instant / offline-resilient.
                     OfflinePrefetch.ensureAround(getApplication(), fix.lat, fix.lon)
                     recomputeNav(fix)
+                    maybeUpdateSpeedLimit(fix)
                 }
                 delay(LOCATION_POLL_MS)
             }
@@ -168,6 +179,24 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     fun stopLiveLocation() {
         locationJob?.cancel()
         locationJob = null
+    }
+
+    /**
+     * Refresh the posted speed limit for the current road — throttled so we don't hammer Overpass:
+     * only re-query after moving > ~60 m or every ~10 s. Clears the badge when stopped/parked.
+     */
+    private fun maybeUpdateSpeedLimit(fix: DaemonLocation.Fix) {
+        val movingKmh = fix.speedKmh ?: 0.0
+        if (movingKmh < 4.0) { _speedLimit.value = null; return }   // parked → no badge
+        val now = System.currentTimeMillis()
+        val movedM = NavGeo.haversineKm(slLastLat, slLastLon, fix.lat, fix.lon) * 1000
+        if (movedM < 60 && now - slLastAtMs < 10_000) return
+        if (slJob?.isActive == true) return
+        slLastLat = fix.lat; slLastLon = fix.lon; slLastAtMs = now
+        slJob = viewModelScope.launch {
+            val limit = runCatching { SpeedLimit.at(fix.lat, fix.lon, fix.bearing) }.getOrNull()
+            if (limit != null) _speedLimit.value = limit   // keep the last known limit if a lookup misses
+        }
     }
 
     private fun recomputeNav(fix: DaemonLocation.Fix) {

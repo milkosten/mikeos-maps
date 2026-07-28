@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -269,6 +270,7 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
     val active by vm.active.collectAsStateWithLifecycle()
     val location by vm.location.collectAsStateWithLifecycle()
     val navInfo by vm.navInfo.collectAsStateWithLifecycle()
+    val speedLimit by vm.speedLimit.collectAsStateWithLifecycle()
     val guidance by vm.guidance.collectAsStateWithLifecycle()
     val mapStyleUrl by com.mikeos.maps.ui.MapTheme.styleUrl.collectAsStateWithLifecycle()
     val mapThemeMode by com.mikeos.maps.ui.MapTheme.mode.collectAsStateWithLifecycle()
@@ -330,6 +332,14 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
                 onClick = { northUp = !northUp },
             )
         }
+
+        // Speed-limit sign + your current speed (bottom-left) — the posted limit for the road you're on;
+        // the speed turns red when you're over it.
+        SpeedLimitBadge(
+            limit = speedLimit,
+            speedKmh = location?.speedKmh ?: 0.0,
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 150.dp),
+        )
 
         // Top overlay: the turn-by-turn banner while navigating, else the ☰ menu + agent window.
         Box(
@@ -983,6 +993,37 @@ private fun SettingsSection(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
                 )
             }
+        }
+    }
+}
+
+/**
+ * The round European speed-limit sign (white disc, red ring, black number) with your current speed
+ * under it. Shows only while driving and when we know the road's posted limit; the speed goes red when
+ * you're over the limit.
+ */
+@Composable
+private fun SpeedLimitBadge(limit: Int?, speedKmh: Double, modifier: Modifier = Modifier) {
+    if (limit == null || speedKmh < 5.0) return
+    val over = speedKmh > limit + 3   // small tolerance before flagging
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(58.dp)
+                .clip(CircleShape)
+                .background(Color.White)
+                .border(5.dp, Color(0xFFD32F2F), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("$limit", color = Color.Black, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(6.dp))
+        Surface(shape = RoundedCornerShape(10.dp), color = if (over) MikeRed else MikeSurface.copy(alpha = 0.92f)) {
+            Text(
+                "${speedKmh.roundToInt()}",
+                color = if (over) Color.White else MikeOnSurface,
+                fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
         }
     }
 }
