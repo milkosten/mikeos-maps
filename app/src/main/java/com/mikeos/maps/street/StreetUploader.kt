@@ -49,44 +49,59 @@ object StreetUploader {
     private val jpegMedia = "image/jpeg".toMediaType()
     private val jsonMedia = "application/json".toMediaType()
 
-    /** WiFi / any other unmetered, internet-capable network. */
-    fun isUnmetered(context: Context): Boolean {
+    /**
+     * On WiFi (or Ethernet) — NOT cellular. We used to require an *unmetered* network, but that quietly
+     * blocked uploads forever on a **metered WiFi hotspot** (the owner's phone tethers a metered "…mobile"
+     * WiFi, so NET_CAPABILITY_NOT_METERED is false → every drive stayed stranded). The real intent is
+     * "don't chew mobile data with full-res frames": upload on any WiFi/Ethernet, skip on cellular.
+     */
+    fun isOnWifi(context: Context): Boolean {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
         val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return false) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
     }
 
     /**
      * Upload every completed session (all but [activeSession], still being written). Returns the number
-     * of frames newly stored in the lake. [requireUnmetered] gates on WiFi (default true).
+     * of frames newly stored in the lake. [requireWifi] gates on WiFi/Ethernet (default true).
      */
     suspend fun uploadPending(
         context: Context,
         activeSession: File? = null,
-        requireUnmetered: Boolean = true,
+        requireWifi: Boolean = true,
     ): Int = mutex.withLock {
         withContext(Dispatchers.IO) {
             if (!MikeStreet.isEnabled(context)) return@withContext 0
-            if (requireUnmetered && !isUnmetered(context)) { Log.i(TAG, "skip upload: metered network"); return@withContext 0 }
+            if (requireWifi && !isOnWifi(context)) { Log.i(TAG, "skip upload: not on WiFi (won't use mobile data)"); return@withContext 0 }
 
+            // Naming-agnostic: upload ANY session dir that has frames and no `.uploaded` marker — never
+            // keyed on the dir-name shape (bare-timestamp vs trip-<id>_...), so a naming change can't
+            // silently strand drives again.
             val sessions = StreetStore.root(context).listFiles { f -> f.isDirectory }?.sortedBy { it.name }
                 ?: return@withContext 0
             var stored = 0
+            var failed = 0
             for (sess in sessions) {
                 if (sess == activeSession) continue
                 if (File(sess, ".uploaded").exists()) continue
-                if (requireUnmetered && !isUnmetered(context)) break   // WiFi dropped mid-run — stop cleanly
+                if (requireWifi && !isOnWifi(context)) { Log.w(TAG, "WiFi dropped mid-run — stopping"); break }
                 val frames = sess.listFiles { f -> f.name.startsWith("frame_") && f.name.endsWith(".jpg") }
                     ?.sortedBy { it.name } ?: continue
                 if (frames.isEmpty()) continue
                 var allOk = true
                 for (jpg in frames) {
-                    if (uploadFrame(jpg)) stored++ else allOk = false
+                    if (uploadFrame(jpg)) stored++ else { allOk = false; failed++ }
                 }
-                if (allOk) StreetStore.markUploaded(sess)   // safe to reclaim locally
+                if (allOk) {
+                    StreetStore.markUploaded(sess)   // safe to reclaim locally
+                    Log.i(TAG, "uploaded session ${sess.name} (${frames.size} frames)")
+                } else {
+                    Log.w(TAG, "session ${sess.name} incomplete — NOT marked uploaded, will retry")
+                }
             }
-            if (stored > 0) Log.i(TAG, "uploaded $stored frame(s) to the lake")
+            if (stored > 0 || failed > 0) Log.i(TAG, "upload pass done: $stored stored, $failed failed")
             stored
         }
     }
