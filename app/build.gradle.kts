@@ -53,7 +53,10 @@ android {
         // Photon (self-hosted, on the OSM box): prefix/fuzzy, LOCATION-BIASED search-as-you-type — the
         // right tool for partial queries like "15 boulevard general" that Nominatim (whole-address
         // geocoder) returns 0 for. The app tries Photon first, falls back to Nominatim if it's down.
-        buildConfigField("String", "PHOTON_URL", "\"https://osm.osmike.com/photon\"")
+        // Whole-planet Photon on the 242 box (covers Monaco/Italy/everywhere), fronted at its own
+        // vhost. NOTE: osm.osmike.com/photon is also repointed to this same planet Photon, so app
+        // versions still using the old URL get planet results too (no forced OTA to fix Monaco search).
+        buildConfigField("String", "PHOTON_URL", "\"https://photon.osmike.com\"")
         buildConfigField("String", "OVERPASS_URL", "\"https://overpass-api.de\"")   // PoiSearch name-REGEX: stays PUBLIC (regex is ~31s single-threaded on our box; the big warm public cluster is fast).
         // NearbySearch (parking/fuel/EV) is a TAG query — the fast (~0.3-0.75s) indexed pattern our
         // self-hosted planet Overpass excels at, with no public rate limits. Point it at our box.
