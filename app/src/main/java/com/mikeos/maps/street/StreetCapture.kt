@@ -69,10 +69,14 @@ class StreetCapture(private val activity: ComponentActivity) {
         }
     }
 
-    /** Called from the Activity's onResume — (re)start capture if opted-in + permitted. */
+    /**
+     * Called from the Activity's onResume — start the capture LOOP if opted-in + permitted. The camera
+     * itself is only bound once an actual journey is under way (see [startLoop]); we don't open the
+     * camera just because the app is foregrounded, so there's no capture (and no camera indicator) while
+     * you're parked at home.
+     */
     fun onResume() {
         if (!MikeStreet.isEnabled(activity) || !hasCameraPermission()) { stop(); return }
-        bindCamera()
         startLoop()
         // Opportunistic sync: if we're back on WiFi (e.g. parked at home), push any pending drives.
         activity.lifecycleScope.launch { runCatching { StreetUploader.uploadPending(activity, session) } }
@@ -85,6 +89,25 @@ class StreetCapture(private val activity: ComponentActivity) {
 
     fun hasCameraPermission(): Boolean =
         ContextCompat.checkSelfPermission(activity, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+    /** Release the camera when we're not on a journey — no open camera, no indicator, no captures. */
+    private fun releaseCamera() {
+        if (imageCapture == null && provider == null) return
+        runCatching { orientationListener.disable() }
+        runCatching { provider?.unbindAll() }
+        imageCapture = null
+        provider = null
+        Log.i(TAG, "camera released (no active journey)")
+    }
+
+    /** Throttled, WiFi-preferred sync of completed drives to the lake. */
+    private fun maybeUpload() {
+        val now = System.currentTimeMillis()
+        if (now - lastUploadAt > UPLOAD_INTERVAL_MS) {
+            lastUploadAt = now
+            activity.lifecycleScope.launch { runCatching { StreetUploader.uploadPending(activity, session) } }
+        }
+    }
 
     private fun bindCamera() {
         if (imageCapture != null) return
@@ -113,17 +136,31 @@ class StreetCapture(private val activity: ComponentActivity) {
         loopJob = activity.lifecycleScope.launch {
             while (isActive) {
                 if (!MikeStreet.isEnabled(activity)) {
-                    MikeStreet.setCapturing(false); session = null; sessionTripId = null; delay(2000); continue
+                    MikeStreet.setCapturing(false); releaseCamera(); session = null; sessionTripId = null; delay(2000); continue
                 }
+
+                // The GATE: record ONLY while an actual JOURNEY (trip) is active. No trip = at home /
+                // not driving ⇒ camera off, zero photos. This fixes capturing at home on GPS drift, and
+                // guarantees every frame belongs to a journey (its trip_id).
+                val tripId = runCatching { TripManager.get(activity.application).active.value?.tripId }.getOrNull()
+                if (tripId == null) {
+                    MikeStreet.setCapturing(false)
+                    releaseCamera()                       // truly off — no capture, no camera indicator
+                    session = null; sessionTripId = null
+                    maybeUpload()                         // parked-on-WiFi: sync past drives to the lake
+                    delay(PROBE_INTERVAL_MS)
+                    continue
+                }
+
+                // On a journey → make sure the camera is ready, then capture while actually moving.
+                bindCamera()
                 val fix = DaemonLocation.current()
                 val moving = (fix?.speedKmh ?: 0.0) >= MOVING_KMH
                 val ic = imageCapture
                 if (moving && ic != null && fix != null) {
-                    val tripId = runCatching { TripManager.get(activity.application).active.value?.tripId }.getOrNull()
                     val now = System.currentTimeMillis()
-                    // One session per trip: rotate only on a NEW trip or after a long idle (a genuinely new
-                    // leg) — NOT on brief traffic-light stops, which previously fragmented one drive into
-                    // dozens of sessions.
+                    // One session per trip: rotate only on a NEW trip or after a long idle (a genuinely
+                    // new leg) — NOT on brief traffic-light stops.
                     val newLeg = session == null || tripId != sessionTripId ||
                         (now - lastCaptureAt) > SESSION_IDLE_RESET_MS
                     if (newLeg) {
@@ -135,16 +172,9 @@ class StreetCapture(private val activity: ComponentActivity) {
                     captureOne(ic, fix)
                     delay(ACTIVE_INTERVAL_MS)
                 } else {
-                    // Stopped (light/traffic/parked). Keep the session open so a brief stop stays in one
-                    // drive; a long idle rotates the session on the next move (handled above). While
-                    // stopped is also a good moment to sync completed drives to the lake (WiFi-gated, so
-                    // it effectively fires when parked on WiFi, not mid-drive on cellular).
+                    // On the journey but momentarily stopped (red light). Keep camera + session; don't
+                    // capture a static scene.
                     MikeStreet.setCapturing(false)
-                    val now = System.currentTimeMillis()
-                    if (now - lastUploadAt > UPLOAD_INTERVAL_MS) {
-                        lastUploadAt = now
-                        launch { runCatching { StreetUploader.uploadPending(activity, session) } }
-                    }
                     delay(PROBE_INTERVAL_MS)
                 }
             }
