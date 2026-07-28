@@ -57,6 +57,8 @@ data class MapsState(
     val favorites: List<SavedPlace> = emptyList(),
     // A POI tapped directly on the map (Super U, a bus stop, a place label) — awaiting a Directions tap.
     val tappedPlace: TappedPoi? = null,
+    // OSM details for the tapped POI (category / hours / phone / website), fetched async; null = loading/none.
+    val tappedDetails: com.mikeos.maps.net.PoiDetails? = null,
     // "Explore nearby" (🔍): parking/fuel/EV around the destination (or the user). Sheet + results.
     val nearbyOpen: Boolean = false,
     val nearbyBusy: Boolean = false,
@@ -399,12 +401,18 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     /** A POI was tapped on the map → show the directions card (unless mid-trip or already previewing). */
     fun onMapPoiTapped(name: String, lat: Double, lon: Double) {
         if (active.value != null || _state.value.previewing) return
-        _state.value = _state.value.copy(tappedPlace = TappedPoi(name, lat, lon))
+        _state.value = _state.value.copy(tappedPlace = TappedPoi(name, lat, lon), tappedDetails = null)
+        // Enrich the card with what OSM knows (category / hours / phone / website).
+        viewModelScope.launch {
+            val d = runCatching { com.mikeos.maps.net.PoiDetails.at(name, lat, lon) }.getOrNull()
+            val cur = _state.value.tappedPlace
+            if (cur?.lat == lat && cur.lon == lon) _state.value = _state.value.copy(tappedDetails = d)
+        }
     }
 
     /** Empty-map tap (or Close on the card) → dismiss the tapped-POI card. */
     fun dismissTappedPlace() {
-        if (_state.value.tappedPlace != null) _state.value = _state.value.copy(tappedPlace = null)
+        if (_state.value.tappedPlace != null) _state.value = _state.value.copy(tappedPlace = null, tappedDetails = null)
     }
 
     /**

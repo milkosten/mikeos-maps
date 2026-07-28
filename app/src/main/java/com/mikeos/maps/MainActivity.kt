@@ -418,6 +418,7 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
                 )
                 state.tappedPlace != null -> TappedPlaceCard(
                     place = state.tappedPlace!!,
+                    details = state.tappedDetails,
                     busy = state.busy,
                     onDirections = { vm.directionsToTappedPlace() },
                     onDismiss = { vm.dismissTappedPlace() },
@@ -729,14 +730,16 @@ private fun RoutePreviewPanel(
     }
 }
 
-/** Google-Maps-style card for a POI tapped on the map: its name + a one-tap Directions button. */
+/** Google-Maps-style card for a POI tapped on the map: its details (category, hours, phone, website) + Directions. */
 @Composable
 private fun TappedPlaceCard(
     place: TappedPoi,
+    details: com.mikeos.maps.net.PoiDetails?,
     busy: Boolean,
     onDirections: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val ctx = LocalContext.current
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -747,7 +750,8 @@ private fun TappedPlaceCard(
                 Icon(Icons.Filled.Place, contentDescription = null, tint = MikeAccent)
                 Spacer(Modifier.size(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("PLACE", color = MikeAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+                    Text(details?.category ?: "PLACE", color = MikeAccent, fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(place.name, color = MikeOnSurface, fontSize = 16.sp, fontWeight = FontWeight.Bold,
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
@@ -755,6 +759,46 @@ private fun TappedPlaceCard(
                     Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = MikeMuted)
                 }
             }
+
+            // Opening hours → "Open · closes 20:00" (green) / "Closed" (red) + the raw hours.
+            details?.openingHours?.let { oh ->
+                val st = com.mikeos.maps.nav.OpeningHours.status(oh)
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (st.label.isNotBlank()) {
+                        Text(st.label, color = if (st.open == true) MikeGreen else if (st.open == false) MikeRed else MikeMuted,
+                            fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("  ·  ", color = MikeMuted, fontSize = 13.sp)
+                    }
+                    Text(oh, color = MikeMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            // Phone (tap to call) + Website (tap to open).
+            details?.phone?.let { ph ->
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                        .clickable { runCatching { ctx.startActivity(Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:${ph.replace(" ", "")}"))) } }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("☎", fontSize = 15.sp); Spacer(Modifier.width(10.dp))
+                    Text(ph, color = MikeAccent, fontSize = 14.sp)
+                }
+            }
+            details?.website?.let { web ->
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                        .clickable { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(web))) } }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("🌐", fontSize = 15.sp); Spacer(Modifier.width(10.dp))
+                    Text(web.removePrefix("https://").removePrefix("http://").trimEnd('/'),
+                        color = MikeAccent, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+
             Spacer(Modifier.height(14.dp))
             Button(
                 onClick = onDirections,
