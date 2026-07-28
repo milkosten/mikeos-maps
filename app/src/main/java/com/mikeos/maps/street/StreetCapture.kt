@@ -40,6 +40,7 @@ class StreetCapture(private val activity: ComponentActivity) {
     private var session: File? = null
     private var sessionTripId: String? = null   // the trip this session belongs to (one session per trip)
     private var lastCaptureAt: Long = 0L        // for the idle→new-session decision
+    private var lastUploadAt: Long = 0L         // for throttling the lake sync while parked
     private var frameTick: Long = 0L            // for throttling the storage GC
     private val exec = Executors.newSingleThreadExecutor()
     private val deviceId: String by lazy {
@@ -73,6 +74,8 @@ class StreetCapture(private val activity: ComponentActivity) {
         if (!MikeStreet.isEnabled(activity) || !hasCameraPermission()) { stop(); return }
         bindCamera()
         startLoop()
+        // Opportunistic sync: if we're back on WiFi (e.g. parked at home), push any pending drives.
+        activity.lifecycleScope.launch { runCatching { StreetUploader.uploadPending(activity, session) } }
     }
 
     fun onPause() = stop()
@@ -132,10 +135,16 @@ class StreetCapture(private val activity: ComponentActivity) {
                     captureOne(ic, fix)
                     delay(ACTIVE_INTERVAL_MS)
                 } else {
-                    // Stopped (light/traffic). Keep the session open so a brief stop stays in one drive;
-                    // a long idle rotates the session on the next move (handled above). (P2 adds the
-                    // 60s-probe + road/trail vision gate.)
+                    // Stopped (light/traffic/parked). Keep the session open so a brief stop stays in one
+                    // drive; a long idle rotates the session on the next move (handled above). While
+                    // stopped is also a good moment to sync completed drives to the lake (WiFi-gated, so
+                    // it effectively fires when parked on WiFi, not mid-drive on cellular).
                     MikeStreet.setCapturing(false)
+                    val now = System.currentTimeMillis()
+                    if (now - lastUploadAt > UPLOAD_INTERVAL_MS) {
+                        lastUploadAt = now
+                        launch { runCatching { StreetUploader.uploadPending(activity, session) } }
+                    }
                     delay(PROBE_INTERVAL_MS)
                 }
             }
@@ -187,5 +196,6 @@ class StreetCapture(private val activity: ComponentActivity) {
         private const val PROBE_INTERVAL_MS = 4000L
         private const val SESSION_IDLE_RESET_MS = 5 * 60_000L  // >5 min stopped ⇒ a new leg/session
         private const val GC_EVERY_FRAMES = 20L                // run the storage GC every N frames, not every frame
+        private const val UPLOAD_INTERVAL_MS = 60_000L         // throttle the parked-idle lake sync
     }
 }

@@ -14,8 +14,8 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 33
-        versionName = "0.11.1-mikestreet-capfix"
+        versionCode = 34
+        versionName = "0.12.0-mikestreet-upload"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
         buildConfigField("String", "DAEMON_BASE_URL", "\"https://127.0.0.1:7743\"")
@@ -55,6 +55,12 @@ android {
         // self-hosted planet Overpass excels at, with no public rate limits. Point it at our box.
         buildConfigField("String", "OVERPASS_SELF_URL", "\"https://osm.osmike.com/overpass\"")
         buildConfigField("String", "OSM_TOKEN", "\"d1385c3a8ec5febce95ee2481c41b93b83779a78477ef5d1b2c630c7064adf7e\"")
+
+        // MikeStreet lake (self-hosted on the 242 box): the app uploads full-res dashboard frames +
+        // gps.json here. STREET_INGEST_KEY is WRITE-ONLY (POST /api/frames only — never admin), so it's
+        // safe on-device per the no-admin-key-on-a-phone rule.
+        buildConfigField("String", "STREET_API_URL", "\"https://street-api.osmike.com\"")
+        buildConfigField("String", "STREET_INGEST_KEY", "\"ba61065e499f0d831d8f29ba433cb202e3d2aa397e2bd956\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
