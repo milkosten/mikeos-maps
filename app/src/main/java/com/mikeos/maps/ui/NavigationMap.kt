@@ -71,6 +71,7 @@ fun NavigationMap(
     onMapTapEmpty: () -> Unit,
     poiResults: List<NearbySearch.Place> = emptyList(),
     onPoiResultTap: (NearbySearch.Place) -> Unit = {},
+    styleUrl: String = "${BuildConfig.BASEMAP_URL}/style.json",
     modifier: Modifier = Modifier,
 ) {
     val mapView = rememberMapViewWithLifecycle()
@@ -149,98 +150,119 @@ fun NavigationMap(
                             false  // let the map handle a plain tap
                         }
                     }
-                    map.setStyle(Style.Builder().fromUri("${BuildConfig.BASEMAP_URL}/style.json")) { style ->
+                    map.setStyle(Style.Builder().fromUri(styleUrl)) { style ->
                         holder.style = style
-                        // Route line.
-                        style.addSource(GeoJsonSource(SRC_ROUTE))
-                        style.addLayer(
-                            LineLayer(LYR_ROUTE, SRC_ROUTE).withProperties(
-                                PropertyFactory.lineColor(accent),
-                                PropertyFactory.lineWidth(6f),
-                                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
-                            ),
-                        )
-                        // Explore result pins (parking/fuel/food…): a category-coloured dot + name
-                        // label, tappable to route there (see the click listener).
-                        style.addSource(GeoJsonSource(SRC_POIS))
-                        style.addLayer(
-                            CircleLayer(LYR_POIS_DOT, SRC_POIS).withProperties(
-                                PropertyFactory.circleColor(
-                                    Expression.match(
-                                        Expression.get("cat"),
-                                        Expression.literal("PARKING"), Expression.rgb(76, 141, 255),
-                                        Expression.literal("FUEL"), Expression.rgb(255, 152, 0),
-                                        Expression.literal("CHARGING"), Expression.rgb(61, 220, 132),
-                                        Expression.literal("FOOD"), Expression.rgb(255, 90, 122),
-                                        Expression.literal("SHOP"), Expression.rgb(176, 124, 255),
-                                        Expression.literal("REST"), Expression.rgb(38, 198, 218),
-                                        Expression.literal("CASH"), Expression.rgb(255, 194, 75),
-                                        Expression.rgb(154, 165, 177),   // default (OTHER)
-                                    ),
-                                ),
-                                PropertyFactory.circleRadius(9f),
-                                PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
-                                PropertyFactory.circleStrokeWidth(2.5f),
-                            ),
-                        )
-                        style.addLayer(
-                            SymbolLayer(LYR_POIS_LABEL, SRC_POIS).withProperties(
-                                PropertyFactory.textField(Expression.get("name")),
-                                // MUST use a font the basemap's glyphs provide (Noto Sans), or the glyph
-                                // fetch fails and kills rendering of the whole source (dots included).
-                                PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
-                                PropertyFactory.textSize(11f),
-                                PropertyFactory.textColor(android.graphics.Color.WHITE),
-                                PropertyFactory.textHaloColor(android.graphics.Color.BLACK),
-                                PropertyFactory.textHaloWidth(1.4f),
-                                PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
-                                PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
-                                PropertyFactory.textOptional(true),
-                                PropertyFactory.textAllowOverlap(false),
-                            ),
-                        )
-                        // Location puck: soft accuracy ring + solid dot.
-                        style.addSource(GeoJsonSource(SRC_ME))
-                        style.addLayer(
-                            CircleLayer(LYR_ME_RING, SRC_ME).withProperties(
-                                PropertyFactory.circleColor(accent),
-                                PropertyFactory.circleOpacity(0.18f),
-                                PropertyFactory.circleRadius(22f),
-                            ),
-                        )
-                        style.addLayer(
-                            CircleLayer(LYR_ME_DOT, SRC_ME).withProperties(
-                                PropertyFactory.circleColor(accent),
-                                PropertyFactory.circleRadius(7f),
-                                PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
-                                PropertyFactory.circleStrokeWidth(3f),
-                            ),
-                        )
-                        // Driving puck: an arrow that points the way (hidden until navigating). Rotation
-                        // is MAP-aligned + set to the travel bearing, so it points screen-up in
-                        // heading-up mode and the compass direction in north-up. Sits above the dot.
-                        style.addImage(IMG_ARROW, arrowBitmap(accent))
-                        style.addLayer(
-                            SymbolLayer(LYR_ME_ARROW, SRC_ME).withProperties(
-                                PropertyFactory.iconImage(IMG_ARROW),
-                                PropertyFactory.iconSize(0.8f),
-                                PropertyFactory.iconAllowOverlap(true),
-                                PropertyFactory.iconIgnorePlacement(true),
-                                PropertyFactory.iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
-                                // Stay upright facing the camera even when the map is tilted, so it
-                                // reads as a crisp arrow pointing up-screen (not squashed onto the road).
-                                PropertyFactory.iconPitchAlignment(Property.ICON_PITCH_ALIGNMENT_VIEWPORT),
-                                PropertyFactory.iconRotate(0f),
-                                PropertyFactory.visibility(Property.NONE),
-                            ),
-                        )
+                        holder.currentStyleUrl = styleUrl
+                        installOverlays(style, accent)
                         holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults)
                     }
                 }
             }
         },
-        update = { holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults) },
+        update = {
+            // Theme switch (auto light/dark): swap the basemap style, then RE-ADD our overlays — a
+            // MapLibre setStyle drops all custom sources/layers — and re-push the current data. Camera
+            // is preserved by MapLibre across the swap.
+            val m = holder.map
+            if (m != null && holder.style != null && holder.currentStyleUrl != null && holder.currentStyleUrl != styleUrl) {
+                holder.currentStyleUrl = styleUrl
+                m.setStyle(Style.Builder().fromUri(styleUrl)) { style ->
+                    holder.style = style
+                    installOverlays(style, accent)
+                    holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults)
+                }
+            } else {
+                holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults)
+            }
+        },
+    )
+}
+
+/**
+ * Add MikeMaps' overlay sources + layers onto a freshly-loaded [style] (route line, Explore POI pins,
+ * the location puck ring/dot, and the driving arrow). Called on the initial style load AND after every
+ * theme swap, since MapLibre's setStyle wipes custom layers.
+ */
+private fun installOverlays(style: Style, accent: Int) {
+    // Route line.
+    style.addSource(GeoJsonSource(SRC_ROUTE))
+    style.addLayer(
+        LineLayer(LYR_ROUTE, SRC_ROUTE).withProperties(
+            PropertyFactory.lineColor(accent),
+            PropertyFactory.lineWidth(6f),
+            PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+            PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+        ),
+    )
+    // Explore result pins (parking/fuel/food…): a category-coloured dot + name label, tappable.
+    style.addSource(GeoJsonSource(SRC_POIS))
+    style.addLayer(
+        CircleLayer(LYR_POIS_DOT, SRC_POIS).withProperties(
+            PropertyFactory.circleColor(
+                Expression.match(
+                    Expression.get("cat"),
+                    Expression.literal("PARKING"), Expression.rgb(76, 141, 255),
+                    Expression.literal("FUEL"), Expression.rgb(255, 152, 0),
+                    Expression.literal("CHARGING"), Expression.rgb(61, 220, 132),
+                    Expression.literal("FOOD"), Expression.rgb(255, 90, 122),
+                    Expression.literal("SHOP"), Expression.rgb(176, 124, 255),
+                    Expression.literal("REST"), Expression.rgb(38, 198, 218),
+                    Expression.literal("CASH"), Expression.rgb(255, 194, 75),
+                    Expression.rgb(154, 165, 177),   // default (OTHER)
+                ),
+            ),
+            PropertyFactory.circleRadius(9f),
+            PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+            PropertyFactory.circleStrokeWidth(2.5f),
+        ),
+    )
+    style.addLayer(
+        SymbolLayer(LYR_POIS_LABEL, SRC_POIS).withProperties(
+            PropertyFactory.textField(Expression.get("name")),
+            // MUST use a font the basemap's glyphs provide (Noto Sans), or the glyph fetch fails and
+            // kills rendering of the whole source (dots included).
+            PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+            PropertyFactory.textSize(11f),
+            PropertyFactory.textColor(android.graphics.Color.WHITE),
+            PropertyFactory.textHaloColor(android.graphics.Color.BLACK),
+            PropertyFactory.textHaloWidth(1.4f),
+            PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
+            PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+            PropertyFactory.textOptional(true),
+            PropertyFactory.textAllowOverlap(false),
+        ),
+    )
+    // Location puck: soft accuracy ring + solid dot.
+    style.addSource(GeoJsonSource(SRC_ME))
+    style.addLayer(
+        CircleLayer(LYR_ME_RING, SRC_ME).withProperties(
+            PropertyFactory.circleColor(accent),
+            PropertyFactory.circleOpacity(0.18f),
+            PropertyFactory.circleRadius(22f),
+        ),
+    )
+    style.addLayer(
+        CircleLayer(LYR_ME_DOT, SRC_ME).withProperties(
+            PropertyFactory.circleColor(accent),
+            PropertyFactory.circleRadius(7f),
+            PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+            PropertyFactory.circleStrokeWidth(3f),
+        ),
+    )
+    // Driving puck: an arrow that points the way (hidden until navigating). MAP-aligned rotation set to
+    // the travel bearing; viewport pitch-alignment keeps it crisp when the map is tilted. Above the dot.
+    style.addImage(IMG_ARROW, arrowBitmap(accent))
+    style.addLayer(
+        SymbolLayer(LYR_ME_ARROW, SRC_ME).withProperties(
+            PropertyFactory.iconImage(IMG_ARROW),
+            PropertyFactory.iconSize(0.8f),
+            PropertyFactory.iconAllowOverlap(true),
+            PropertyFactory.iconIgnorePlacement(true),
+            PropertyFactory.iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
+            PropertyFactory.iconPitchAlignment(Property.ICON_PITCH_ALIGNMENT_VIEWPORT),
+            PropertyFactory.iconRotate(0f),
+            PropertyFactory.visibility(Property.NONE),
+        ),
     )
 }
 
@@ -248,6 +270,7 @@ fun NavigationMap(
 private class NavMapHolder {
     var map: MapLibreMap? = null
     var style: Style? = null
+    var currentStyleUrl: String? = null   // the basemap style currently loaded (for theme switching)
     var pois: List<NearbySearch.Place> = emptyList()   // current result pins (for tap → Place lookup)
     private var centeredOnce = false
     private var lastFittedRoute: List<PolylineCodec.LatLon>? = null

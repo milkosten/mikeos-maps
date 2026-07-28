@@ -46,7 +46,9 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material.icons.filled.LocalParking
 import androidx.compose.material.icons.filled.LocalGasStation
@@ -130,6 +132,8 @@ class MainActivity : ComponentActivity() {
 
     // MikeStreet dashboard capture (opt-in). CAMERA is requested only when the user switches it on.
     private lateinit var streetCapture: com.mikeos.maps.street.StreetCapture
+    // Ambient-light sensor → auto light/dark map (only active while foreground).
+    private lateinit var lightSensor: com.mikeos.maps.ui.LightSensor
     private val cameraPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> if (granted) streetCapture.refresh() }
@@ -157,6 +161,9 @@ class MainActivity : ComponentActivity() {
         // MikeStreet capture (P1) — opt-in dashboard imagery.
         com.mikeos.maps.street.MikeStreet.init(this)
         streetCapture = com.mikeos.maps.street.StreetCapture(this)
+        // Map appearance + ambient-light auto light/dark.
+        com.mikeos.maps.ui.MapTheme.init(this)
+        lightSensor = com.mikeos.maps.ui.LightSensor(this)
         pendingDest.value = parseDest(intent)
 
         setContent {
@@ -226,11 +233,13 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (::streetCapture.isInitialized) streetCapture.onResume()
+        if (::lightSensor.isInitialized) lightSensor.start()
     }
 
     override fun onPause() {
         super.onPause()
         if (::streetCapture.isInitialized) streetCapture.onPause()
+        if (::lightSensor.isInitialized) lightSensor.stop()
     }
 
     private fun requestPermissions() {
@@ -251,6 +260,8 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
     val location by vm.location.collectAsStateWithLifecycle()
     val navInfo by vm.navInfo.collectAsStateWithLifecycle()
     val guidance by vm.guidance.collectAsStateWithLifecycle()
+    val mapStyleUrl by com.mikeos.maps.ui.MapTheme.styleUrl.collectAsStateWithLifecycle()
+    val mapThemeMode by com.mikeos.maps.ui.MapTheme.mode.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     var follow by remember { mutableStateOf(true) }
@@ -285,6 +296,7 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
             onMapTapEmpty = { vm.dismissTappedPlace() },
             poiResults = state.nearby,
             onPoiResultTap = { vm.chooseNearby(it) },
+            styleUrl = mapStyleUrl,
             modifier = Modifier.fillMaxSize(),
         )
 
@@ -417,6 +429,8 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
                 onToggleFavorite = { label, lat, lon -> vm.toggleFavorite(label, lat, lon) },
                 streetEnabled = streetEnabled,
                 onStreetToggle = onStreetToggle,
+                mapThemeMode = mapThemeMode,
+                onMapThemeChange = { com.mikeos.maps.ui.MapTheme.setMode(context, it) },
             )
         }
     }
@@ -785,6 +799,8 @@ private fun MenuSheet(
     onToggleFavorite: (label: String, lat: Double?, lon: Double?) -> Unit,
     streetEnabled: Boolean = false,
     onStreetToggle: (Boolean) -> Unit = {},
+    mapThemeMode: com.mikeos.maps.ui.MapTheme.Mode = com.mikeos.maps.ui.MapTheme.Mode.AUTO,
+    onMapThemeChange: (com.mikeos.maps.ui.MapTheme.Mode) -> Unit = {},
 ) {
     // The text field OWNS its text + cursor (TextFieldValue), full stop. It is seeded once from
     // state.query when the sheet opens (this composable only exists while menuOpen == true, so it
@@ -854,6 +870,39 @@ private fun MenuSheet(
                 Text("Capture street imagery from the dashboard while you drive", color = MikeMuted, fontSize = 12.sp)
             }
             Switch(checked = streetEnabled, onCheckedChange = { onStreetToggle(it) })
+        }
+
+        // Map appearance: Auto follows the phone's ambient-light sensor (light in a bright car, dark at
+        // night); Light / Dark force it.
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Brightness6, contentDescription = null, tint = MikeAccent)
+            Spacer(Modifier.width(14.dp))
+            Text("Map appearance", color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            com.mikeos.maps.ui.MapTheme.Mode.entries.forEach { m ->
+                val selected = m == mapThemeMode
+                val label = when (m) {
+                    com.mikeos.maps.ui.MapTheme.Mode.AUTO -> "Auto"
+                    com.mikeos.maps.ui.MapTheme.Mode.LIGHT -> "Light"
+                    com.mikeos.maps.ui.MapTheme.Mode.DARK -> "Dark"
+                }
+                Surface(
+                    onClick = { onMapThemeChange(m) },
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (selected) MikeAccent else MikeSurface,
+                    contentColor = if (selected) MikeBg else MikeOnSurface,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        label, textAlign = TextAlign.Center, fontSize = 13.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                    )
+                }
+            }
         }
 
         // Type-ahead suggestions (history first, then places) — tap to preview, tap ★ to save.
