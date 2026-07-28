@@ -343,19 +343,23 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         val online = runCatching { Geocoder.search(query, 8, near?.lat, near?.lon) }
             .getOrDefault(emptyList())
             .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
-        val seen = mutableSetOf<String>()
         fun shortKey(s: Suggestion) = s.label.substringBefore(",").trim().lowercase()
-        val merged = (local + hist + poi + online).filter { seen.add(shortKey(it)) }
+        fun distKm(s: Suggestion) =
+            if (near != null && s.lat != null && s.lon != null) NavGeo.haversineKm(near.lat, near.lon, s.lat, s.lon)
+            else Double.MAX_VALUE
+        // Dedup by short name, but keep the NEAREST instance of each — so "Super U" resolves to the
+        // store you're next to, not a farther namesake that merely ranked first (which used to get
+        // dropped). 3× "Avenue de l'Ange Gardien" still collapses to the closest one.
+        val best = LinkedHashMap<String, Suggestion>()
+        for (s in (local + hist + poi + online)) {
+            val k = shortKey(s)
+            val cur = best[k]
+            if (cur == null || distKm(s) < distKm(cur)) best[k] = s
+        }
+        val merged = best.values.toList()
         // FOCUS ON THE CLOSEST: rank by distance from the user (a namesake 1000 km away must never
         // beat the one you're standing at). Coordless history names sink to the end.
-        return if (near != null) {
-            merged.sortedBy { s ->
-                if (s.lat != null && s.lon != null) NavGeo.haversineKm(near.lat, near.lon, s.lat, s.lon)
-                else Double.MAX_VALUE
-            }.take(8)
-        } else {
-            merged.take(8)
-        }
+        return if (near != null) merged.sortedBy { distKm(it) }.take(8) else merged.take(8)
     }
 
     /** A POI was tapped on the map → show the directions card (unless mid-trip or already previewing). */

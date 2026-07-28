@@ -28,6 +28,9 @@ object Geocoder {
 
     private const val TAG = "Geocoder"
     private const val UA = "MikeMaps/0.1 (MikeOS navigation agent; mikaelwestoo@gmail.com)"
+    // If Photon returns at least this many hits, trust it and DON'T pollute with Nominatim's fuzzy
+    // address guesses (they crowd out real POIs like "Super U"). Below it, Nominatim fills the gap.
+    private const val PHOTON_MIN = 4
 
     data class Place(val name: String, val lat: Double, val lon: Double)
 
@@ -76,14 +79,18 @@ object Geocoder {
                 out.putIfAbsent(key(p), p)
         }
 
-        // 2) Nominatim — fill remaining slots. Biased box first (precise), then worldwide.
-        if (out.size < limit && nearLat != null && nearLon != null) {
+        // 2) Nominatim — ONLY as a fallback when Photon came up short. Photon (planet, location-biased)
+        //    is the good answer; Nominatim, asked for the SAME query, returns fuzzy address guesses that
+        //    used to get merged in and — being physically nearby — crowd out Photon's real hits
+        //    (e.g. "SuperU" → random Beaulieu/Nice street addresses instead of the Super U store). So we
+        //    only reach for it when Photon gave us little to work with.
+        if (out.size < PHOTON_MIN && nearLat != null && nearLon != null) {
             val d = 1.5   // ~165 km box around the user
             val viewbox = "${nearLon - d},${nearLat + d},${nearLon + d},${nearLat - d}"
             for (p in run("${BuildConfig.NOMINATIM_URL}/search?q=$enc&format=json&limit=$limit&viewbox=$viewbox&bounded=1"))
                 out.putIfAbsent(key(p), p)
         }
-        if (out.size < limit) {
+        if (out.size < PHOTON_MIN) {
             for (p in run("${BuildConfig.NOMINATIM_URL}/search?q=$enc&format=json&limit=$limit"))
                 out.putIfAbsent(key(p), p)
         }
@@ -130,8 +137,12 @@ object Geocoder {
         val region = p.optString("state").takeUnless { it.isBlank() }
         val country = p.optString("country").takeUnless { it.isBlank() }
         val head = when {
-            street != null -> listOfNotNull(house, street).joinToString(" ")
+            // A named POI (Super U, a café, a station) → show its NAME. This was the bug behind
+            // "SuperU → zero results": a Super U store also has a street ("Rue du 8 Mai"), and labelling
+            // it by the street made the result read as a plain address, so it looked like the store
+            // wasn't found. Name wins; the street is only the label for an address that HAS no name.
             name != null -> name
+            street != null -> listOfNotNull(house, street).joinToString(" ")
             else -> city ?: country ?: "?"
         }
         return listOfNotNull(head, city.takeIf { head != city }, region, country)
