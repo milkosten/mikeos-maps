@@ -14,8 +14,8 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 34
-        versionName = "0.12.0-mikestreet-upload"
+        versionCode = 35
+        versionName = "0.13.0-photon-search"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
         buildConfigField("String", "DAEMON_BASE_URL", "\"https://127.0.0.1:7743\"")
@@ -50,6 +50,10 @@ android {
         // then flip OVERPASS_URL to https://osm.osmike.com/overpass too. The OSM_TOKEN Bearer is sent
         // to both clients; overpass-api.de ignores it, so setting it now is safe.
         buildConfigField("String", "NOMINATIM_URL", "\"https://osm.osmike.com/nominatim\"")
+        // Photon (self-hosted, on the OSM box): prefix/fuzzy, LOCATION-BIASED search-as-you-type — the
+        // right tool for partial queries like "15 boulevard general" that Nominatim (whole-address
+        // geocoder) returns 0 for. The app tries Photon first, falls back to Nominatim if it's down.
+        buildConfigField("String", "PHOTON_URL", "\"https://osm.osmike.com/photon\"")
         buildConfigField("String", "OVERPASS_URL", "\"https://overpass-api.de\"")   // PoiSearch name-REGEX: stays PUBLIC (regex is ~31s single-threaded on our box; the big warm public cluster is fast).
         // NearbySearch (parking/fuel/EV) is a TAG query — the fast (~0.3-0.75s) indexed pattern our
         // self-hosted planet Overpass excels at, with no public rate limits. Point it at our box.

@@ -7,13 +7,20 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
+import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
- * Turns a destination NAME ("Nice city center") into coordinates via **OSM Nominatim**
- * (`GET https://nominatim.openstreetmap.org/search?q=&format=json&limit=1`). Keyless,
- * zero-cost. A descriptive User-Agent is required by the Nominatim usage policy.
+ * Turns a destination NAME ("Nice city center") or a partial address ("15 boulevard general") into
+ * coordinates.
+ *
+ * Two engines, in order:
+ *  1. **Photon** (self-hosted, [BuildConfig.PHOTON_URL]) — prefix/fuzzy, LOCATION-BIASED search: it
+ *     handles as-you-type partials and ranks by nearness, so a user in Villefranche typing "15
+ *     boulevard general" gets the local Boulevard Général — not Virginia Beach. This is the primary.
+ *  2. **Nominatim** ([BuildConfig.NOMINATIM_URL]) — whole-address/place geocoder, used to fill/fallback
+ *     (and when Photon is unreachable, so an OTA that ships before Photon is live still works).
  *
  * Uses the **DoH** OkHttp client because this ROM's system DNS intermittently fails.
  */
@@ -60,18 +67,75 @@ object Geocoder {
         if (q.isBlank()) return@withContext emptyList()
         val enc = URLEncoder.encode(q, "UTF-8")
         val out = LinkedHashMap<String, Place>()   // insertion-ordered, deduped by rounded coords
-        if (nearLat != null && nearLon != null) {
+
+        // 1) Photon FIRST — location-biased + partial-tolerant. This is what fixes "15 boulevard
+        //    general": Photon returns the local street; Nominatim returned 0 (bounded) or global junk.
+        if (BuildConfig.PHOTON_URL.isNotBlank()) {
+            val bias = if (nearLat != null && nearLon != null) "&lat=$nearLat&lon=$nearLon" else ""
+            for (p in runPhoton("${BuildConfig.PHOTON_URL}/api?q=$enc&limit=$limit$bias"))
+                out.putIfAbsent(key(p), p)
+        }
+
+        // 2) Nominatim — fill remaining slots. Biased box first (precise), then worldwide.
+        if (out.size < limit && nearLat != null && nearLon != null) {
             val d = 1.5   // ~165 km box around the user
             val viewbox = "${nearLon - d},${nearLat + d},${nearLon + d},${nearLat - d}"
             for (p in run("${BuildConfig.NOMINATIM_URL}/search?q=$enc&format=json&limit=$limit&viewbox=$viewbox&bounded=1"))
                 out.putIfAbsent(key(p), p)
         }
-        // Fill from a worldwide search (fewer if the local box already covered it).
         if (out.size < limit) {
             for (p in run("${BuildConfig.NOMINATIM_URL}/search?q=$enc&format=json&limit=$limit"))
                 out.putIfAbsent(key(p), p)
         }
         out.values.toList()
+    }
+
+    /** Query Photon (GeoJSON FeatureCollection: geometry.coordinates=[lon,lat], properties=address). */
+    private suspend fun runPhoton(url: String): List<Place> = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA)
+            .header("Accept", "application/json")
+            .apply { if (BuildConfig.OSM_TOKEN.isNotBlank()) header("Authorization", "Bearer ${BuildConfig.OSM_TOKEN}") }
+            .get()
+            .build()
+        try {
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext emptyList()   // Photon down → caller falls back to Nominatim
+                val body = resp.body?.string().orEmpty()
+                val feats = runCatching { JSONObject(body).optJSONArray("features") }.getOrNull()
+                    ?: return@withContext emptyList()
+                (0 until feats.length()).mapNotNull { i ->
+                    val f = feats.optJSONObject(i) ?: return@mapNotNull null
+                    val coords = f.optJSONObject("geometry")?.optJSONArray("coordinates") ?: return@mapNotNull null
+                    val lon = coords.optDouble(0).takeIf { !it.isNaN() } ?: return@mapNotNull null
+                    val lat = coords.optDouble(1).takeIf { !it.isNaN() } ?: return@mapNotNull null
+                    Place(name = photonLabel(f.optJSONObject("properties")), lat = lat, lon = lon)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "photon failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /** Build a readable label from Photon's structured address properties. */
+    private fun photonLabel(p: JSONObject?): String {
+        if (p == null) return "?"
+        val name = p.optString("name").takeUnless { it.isBlank() }
+        val house = p.optString("housenumber").takeUnless { it.isBlank() }
+        val street = p.optString("street").takeUnless { it.isBlank() }
+        val city = p.optString("city").takeUnless { it.isBlank() }
+            ?: p.optString("district").takeUnless { it.isBlank() }
+        val region = p.optString("state").takeUnless { it.isBlank() }
+        val country = p.optString("country").takeUnless { it.isBlank() }
+        val head = when {
+            street != null -> listOfNotNull(house, street).joinToString(" ")
+            name != null -> name
+            else -> city ?: country ?: "?"
+        }
+        return listOfNotNull(head, city.takeIf { head != city }, region, country)
+            .distinct().joinToString(", ")
     }
 
     private suspend fun run(url: String): List<Place> = withContext(Dispatchers.IO) {
