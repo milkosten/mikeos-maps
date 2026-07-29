@@ -238,9 +238,9 @@ private fun installOverlays(style: Style, accent: Int) {
             PropertyFactory.textField(Expression.get("name")),
             PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
             PropertyFactory.textSize(AMBIENT_LABEL_SIZE),
-            PropertyFactory.textColor(android.graphics.Color.WHITE),
-            PropertyFactory.textHaloColor(android.graphics.Color.BLACK),
-            PropertyFactory.textHaloWidth(1.3f),
+            PropertyFactory.textColor(poiTextColor()),
+            PropertyFactory.textHaloColor(android.graphics.Color.WHITE),
+            PropertyFactory.textHaloWidth(2.0f),
             PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
             PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
             PropertyFactory.textOptional(true),
@@ -277,9 +277,9 @@ private fun installOverlays(style: Style, accent: Int) {
             // kills rendering of the whole source (dots included).
             PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
             PropertyFactory.textSize(11f),
-            PropertyFactory.textColor(android.graphics.Color.WHITE),
-            PropertyFactory.textHaloColor(android.graphics.Color.BLACK),
-            PropertyFactory.textHaloWidth(1.4f),
+            PropertyFactory.textColor(poiTextColor()),
+            PropertyFactory.textHaloColor(android.graphics.Color.WHITE),
+            PropertyFactory.textHaloWidth(2.0f),
             PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
             PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
             PropertyFactory.textOptional(true),
@@ -370,7 +370,7 @@ private class NavMapHolder {
         poiResults.forEachIndexed { i, p ->
             if (i > 0) json.append(',')
             val nm = p.name.replace("\\", "\\\\").replace("\"", "\\\"")
-            json.append("{\"type\":\"Feature\",\"properties\":{\"idx\":$i,\"cat\":\"${p.category.name}\",\"name\":\"$nm\"},")
+            json.append("{\"type\":\"Feature\",\"properties\":{\"idx\":$i,\"cat\":\"${p.category.name}\",\"col\":\"${NearbySearch.sectorOf(p.icon)}\",\"name\":\"$nm\"},")
                 .append("\"geometry\":{\"type\":\"Point\",\"coordinates\":[${p.lon},${p.lat}]}}")
         }
         json.append("]}")
@@ -382,7 +382,7 @@ private class NavMapHolder {
         ambientPois.forEachIndexed { i, p ->
             if (i > 0) aj.append(',')
             val nm = p.name.replace("\\", "\\\\").replace("\"", "\\\"")
-            aj.append("{\"type\":\"Feature\",\"properties\":{\"cat\":\"${p.category.name}\",\"icon\":\"${emojiImageId(p.icon)}\",\"name\":\"$nm\"},")
+            aj.append("{\"type\":\"Feature\",\"properties\":{\"cat\":\"${p.category.name}\",\"col\":\"${NearbySearch.sectorOf(p.icon)}\",\"icon\":\"${emojiImageId(p.icon)}\",\"name\":\"$nm\"},")
                 .append("\"geometry\":{\"type\":\"Point\",\"coordinates\":[${p.lon},${p.lat}]}}")
         }
         aj.append("]}")
@@ -476,6 +476,24 @@ private fun featureName(f: Feature): String? {
 
 /** Stable style-image id for a category [emoji] (the ambient features carry this in their `icon` prop). */
 private fun emojiImageId(emoji: String): String = "poi-$emoji"
+
+/**
+ * Sector → LABEL TEXT colour (keys are [NearbySearch.sectorOf]), so food, money, health, retail,
+ * lodging… each read at a glance. Colours are saturated but dark enough to stay legible on the LIGHT
+ * basemap; paired with a white text halo they're also crisp on the dark basemap (white-on-white was
+ * unreadable before). The feature's `col` property carries the sector key.
+ */
+private fun poiTextColor(): Expression = Expression.match(
+    Expression.get("col"),
+    Expression.literal("EAT"), Expression.color(android.graphics.Color.parseColor("#D9480F")),    // food & drink — orange-red
+    Expression.literal("MONEY"), Expression.color(android.graphics.Color.parseColor("#C2255C")),  // banks — magenta
+    Expression.literal("HEALTH"), Expression.color(android.graphics.Color.parseColor("#0C8599")), // health — teal
+    Expression.literal("SHOP"), Expression.color(android.graphics.Color.parseColor("#6741D9")),   // retail — violet
+    Expression.literal("STAY"), Expression.color(android.graphics.Color.parseColor("#2B8A3E")),   // lodging/sights — green
+    Expression.literal("AUTO"), Expression.color(android.graphics.Color.parseColor("#E67700")),   // fuel/repair — amber
+    Expression.literal("CIVIC"), Expression.color(android.graphics.Color.parseColor("#1971C2")),  // civic/leisure — blue
+    Expression.color(android.graphics.Color.parseColor("#343A40")),                               // OTHER — dark slate
+)
 
 /**
  * Render a category [emoji] to a small bitmap so MapLibre GL Native can use it as an icon image — the

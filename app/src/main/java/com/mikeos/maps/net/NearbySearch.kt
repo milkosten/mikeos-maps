@@ -321,6 +321,22 @@ object NearbySearch {
         else -> iconForCategory(cat)
     }
 
+    /**
+     * A colour SECTOR for a POI [icon] emoji — groups the ~56 category emoji into a handful of colour
+     * families so the on-map label text is colour-coded (food, money, health, retail, lodging, auto,
+     * civic). Keeps the app and web in sync; the map's text-colour expression matches on this key.
+     */
+    fun sectorOf(icon: String): String = when (icon) {
+        "🍴", "☕", "🍔", "🍺", "🍸", "🍦", "🥖", "🥩", "🥦", "🐟", "🍷", "🍳" -> "EAT"
+        "🏦", "🏧" -> "MONEY"
+        "💊", "🏥", "🦷", "🐾", "🧴" -> "HEALTH"
+        "🛒", "🏪", "🏬", "🛍️", "👕", "👟", "💍", "📚", "👓", "💐", "💅", "✂️", "🧸", "💻", "🧺", "🚬" -> "SHOP"
+        "🏨", "⛺", "🏛️", "📸", "🎬", "🎭" -> "STAY"
+        "⛽", "🔌", "🚗", "🚲", "🔧", "🔨" -> "AUTO"
+        "✉️", "🚓", "🏋️", "🌳", "⛵", "🅿️", "🚻", "ℹ️", "💼" -> "CIVIC"
+        else -> "OTHER"
+    }
+
     /** Emoji for a coarse [Category] (used where we only have the bucket, e.g. SIRENE businesses). */
     fun iconForCategory(cat: Category): String = when (cat) {
         Category.PARKING -> "🅿️"
