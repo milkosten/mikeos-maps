@@ -75,6 +75,7 @@ fun NavigationMap(
     onViewportChanged: (south: Double, west: Double, north: Double, east: Double, zoom: Double) -> Unit = { _, _, _, _, _ -> },
     focusPoint: PolylineCodec.LatLon? = null,
     styleUrl: String = "${BuildConfig.BASEMAP_URL}/style.json",
+    poiTextScale: Float = 1f,
     modifier: Modifier = Modifier,
 ) {
     val mapView = rememberMapViewWithLifecycle()
@@ -169,7 +170,7 @@ fun NavigationMap(
                         holder.style = style
                         holder.currentStyleUrl = styleUrl
                         installOverlays(style, accent)
-                        holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults, ambientPois, focusPoint)
+                        holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults, ambientPois, focusPoint, poiTextScale)
                     }
                 }
             }
@@ -184,10 +185,10 @@ fun NavigationMap(
                 m.setStyle(Style.Builder().fromUri(styleUrl)) { style ->
                     holder.style = style
                     installOverlays(style, accent)
-                    holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults, ambientPois, focusPoint)
+                    holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults, ambientPois, focusPoint, poiTextScale)
                 }
             } else {
-                holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults, ambientPois, focusPoint)
+                holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults, ambientPois, focusPoint, poiTextScale)
             }
         },
     )
@@ -219,27 +220,28 @@ private fun installOverlays(style: Style, accent: Int) {
             PropertyFactory.circleStrokeWidth(3f),
         ),
     )
-    // Ambient viewport POIs — every named OSM business in view (bakeries, pharmacies, hairdressers…),
-    // drawn UNDER the Explore pins so the map feels full while browsing. Populated by the VM's debounced
-    // Overpass viewport query; tappable via the same name-feature tap path → the place-details card.
+    // Ambient viewport POIs — every named OSM/SIRENE business in view (bakeries, pharmacies,
+    // hairdressers…), drawn UNDER the Explore pins so the map feels full while browsing. Each renders a
+    // recognizable CATEGORY EMOJI (🍴 restaurant, 🍺 bar, ✂️ hairdresser, 🛒 supermarket…) instead of an
+    // anonymous colour dot — emoji don't live in the basemap's SDF glyph font, so we pre-render each to a
+    // bitmap and register it as an icon image (below), keyed by the emoji string in the feature's `icon`.
+    // Tappable via the same name-feature tap path → the place-details card.
+    NearbySearch.ALL_ICONS.forEach { e -> style.addImage(emojiImageId(e), emojiBitmap(e)) }
     style.addSource(GeoJsonSource(SRC_AMBIENT))
     style.addLayer(
-        CircleLayer(LYR_AMBIENT_DOT, SRC_AMBIENT).withProperties(
-            PropertyFactory.circleColor(poiCategoryColor()),
-            PropertyFactory.circleRadius(5f),
-            PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
-            PropertyFactory.circleStrokeWidth(1.5f),
-        ),
-    )
-    style.addLayer(
         SymbolLayer(LYR_AMBIENT_LABEL, SRC_AMBIENT).withProperties(
+            PropertyFactory.iconImage(Expression.get("icon")),
+            PropertyFactory.iconSize(AMBIENT_ICON_SIZE),
+            PropertyFactory.iconAllowOverlap(false),
+            PropertyFactory.iconOptional(false),
+            PropertyFactory.iconPadding(2f),
             PropertyFactory.textField(Expression.get("name")),
             PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
-            PropertyFactory.textSize(10.5f),
+            PropertyFactory.textSize(AMBIENT_LABEL_SIZE),
             PropertyFactory.textColor(android.graphics.Color.WHITE),
             PropertyFactory.textHaloColor(android.graphics.Color.BLACK),
             PropertyFactory.textHaloWidth(1.3f),
-            PropertyFactory.textOffset(arrayOf(0f, 0.9f)),
+            PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
             PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
             PropertyFactory.textOptional(true),
             PropertyFactory.textAllowOverlap(false),
@@ -343,8 +345,15 @@ private class NavMapHolder {
         poiResults: List<NearbySearch.Place>,
         ambientPois: List<NearbySearch.Place>,
         focusPoint: PolylineCodec.LatLon?,
+        poiTextScale: Float = 1f,
     ) {
         val s = style ?: return
+        // Accessibility: scale the business-name labels (and, gently, their emoji chips) to the user's
+        // chosen text size. Applied every render so a settings change takes effect live.
+        s.getLayer(LYR_AMBIENT_LABEL)?.setProperties(
+            PropertyFactory.textSize(AMBIENT_LABEL_SIZE * poiTextScale),
+            PropertyFactory.iconSize(AMBIENT_ICON_SIZE * (1f + (poiTextScale - 1f) * 0.5f)),
+        )
         // Trip-planner destination marker (a pin the map flies to before a route exists).
         s.getSourceAs<GeoJsonSource>(SRC_FOCUS)?.setGeoJson(
             if (focusPoint != null) Point.fromLngLat(focusPoint.lon, focusPoint.lat) as Geometry else EMPTY
@@ -373,7 +382,7 @@ private class NavMapHolder {
         ambientPois.forEachIndexed { i, p ->
             if (i > 0) aj.append(',')
             val nm = p.name.replace("\\", "\\\\").replace("\"", "\\\"")
-            aj.append("{\"type\":\"Feature\",\"properties\":{\"cat\":\"${p.category.name}\",\"name\":\"$nm\"},")
+            aj.append("{\"type\":\"Feature\",\"properties\":{\"cat\":\"${p.category.name}\",\"icon\":\"${emojiImageId(p.icon)}\",\"name\":\"$nm\"},")
                 .append("\"geometry\":{\"type\":\"Point\",\"coordinates\":[${p.lon},${p.lat}]}}")
         }
         aj.append("]}")
@@ -465,18 +474,38 @@ private fun featureName(f: Feature): String? {
     return null
 }
 
-/** Category → dot colour, shared by the Explore pins and the ambient overlay (keys are Category.name). */
-private fun poiCategoryColor(): Expression = Expression.match(
-    Expression.get("cat"),
-    Expression.literal("PARKING"), Expression.rgb(76, 141, 255),
-    Expression.literal("FUEL"), Expression.rgb(255, 152, 0),
-    Expression.literal("CHARGING"), Expression.rgb(61, 220, 132),
-    Expression.literal("FOOD"), Expression.rgb(255, 90, 122),
-    Expression.literal("SHOP"), Expression.rgb(176, 124, 255),
-    Expression.literal("REST"), Expression.rgb(38, 198, 218),
-    Expression.literal("CASH"), Expression.rgb(255, 194, 75),
-    Expression.rgb(154, 165, 177),   // default (OTHER)
-)
+/** Stable style-image id for a category [emoji] (the ambient features carry this in their `icon` prop). */
+private fun emojiImageId(emoji: String): String = "poi-$emoji"
+
+/**
+ * Render a category [emoji] to a small bitmap so MapLibre GL Native can use it as an icon image — the
+ * basemap's SDF glyph font has no colour-emoji glyphs, so text-field emoji would render as tofu. Drawn
+ * on a soft white chip (with a hairline ring) so it stays legible on any basemap colour. Android's
+ * default typeface renders emoji in full colour via NotoColorEmoji.
+ */
+private fun emojiBitmap(emoji: String): Bitmap {
+    val size = 68
+    val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
+    val cx = size / 2f
+    val cy = size / 2f
+    val r = size * 0.40f
+    val chip = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        setShadowLayer(4f, 0f, 1.5f, 0x40000000)
+    }
+    c.drawCircle(cx, cy, r, chip)
+    c.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0x1F000000; style = Paint.Style.STROKE; strokeWidth = 1.5f
+    })
+    val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = size * 0.46f
+        textAlign = Paint.Align.CENTER
+    }
+    val fm = tp.fontMetrics
+    c.drawText(emoji, cx, cy - (fm.ascent + fm.descent) / 2f, tp)
+    return bmp
+}
 
 private const val SRC_ROUTE = "route-src"
 private const val LYR_ROUTE = "route-line"
@@ -484,8 +513,9 @@ private const val SRC_POIS = "pois-src"
 private const val LYR_POIS_DOT = "pois-dot"
 private const val LYR_POIS_LABEL = "pois-label"
 private const val SRC_AMBIENT = "ambient-src"
-private const val LYR_AMBIENT_DOT = "ambient-dot"
 private const val LYR_AMBIENT_LABEL = "ambient-label"
+private const val AMBIENT_ICON_SIZE = 0.62f    // emoji chip scale for the ambient business overlay
+private const val AMBIENT_LABEL_SIZE = 11f      // business-name text size (raised by the a11y setting)
 private const val SRC_FOCUS = "focus-src"
 private const val LYR_FOCUS = "focus-dot"
 private const val FOCUS_ZOOM = 15.5   // zoom when flying to a chosen trip destination

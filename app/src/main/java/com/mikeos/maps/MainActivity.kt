@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Settings
@@ -181,6 +182,7 @@ class MainActivity : ComponentActivity() {
         com.mikeos.maps.street.StreetUploader.enqueuePeriodic(this)
         // Map appearance + ambient-light auto light/dark.
         com.mikeos.maps.ui.MapTheme.init(this)
+        com.mikeos.maps.ui.TextSize.init(this)
         lightSensor = com.mikeos.maps.ui.LightSensor(this)
         // One-time: clean the region/country tail off old saved/history place labels.
         lifecycleScope.launch {
@@ -286,6 +288,7 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
     val ambientPois by vm.ambientPois.collectAsStateWithLifecycle()
     val mapStyleUrl by com.mikeos.maps.ui.MapTheme.styleUrl.collectAsStateWithLifecycle()
     val mapThemeMode by com.mikeos.maps.ui.MapTheme.mode.collectAsStateWithLifecycle()
+    val textSizeLevel by com.mikeos.maps.ui.TextSize.level.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     var follow by remember { mutableStateOf(true) }
@@ -325,6 +328,7 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
             onViewportChanged = { s, w, n, e, z -> vm.onViewport(s, w, n, e, z) },
             focusPoint = state.planDest?.let { com.mikeos.maps.net.PolylineCodec.LatLon(it.lat, it.lon) },
             styleUrl = mapStyleUrl,
+            poiTextScale = textSizeLevel.scale,
             modifier = Modifier.fillMaxSize(),
         )
 
@@ -494,6 +498,8 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
                 onStreetToggle = onStreetToggle,
                 mapThemeMode = mapThemeMode,
                 onMapThemeChange = { com.mikeos.maps.ui.MapTheme.setMode(context, it) },
+                textSizeLevel = textSizeLevel,
+                onTextSizeChange = { com.mikeos.maps.ui.TextSize.setLevel(context, it) },
                 nearLat = location?.lat,
                 nearLon = location?.lon,
             )
@@ -1063,6 +1069,8 @@ private fun MenuSheet(
     onStreetToggle: (Boolean) -> Unit = {},
     mapThemeMode: com.mikeos.maps.ui.MapTheme.Mode = com.mikeos.maps.ui.MapTheme.Mode.AUTO,
     onMapThemeChange: (com.mikeos.maps.ui.MapTheme.Mode) -> Unit = {},
+    textSizeLevel: com.mikeos.maps.ui.TextSize.Level = com.mikeos.maps.ui.TextSize.Level.NORMAL,
+    onTextSizeChange: (com.mikeos.maps.ui.TextSize.Level) -> Unit = {},
     nearLat: Double? = null,
     nearLon: Double? = null,
 ) {
@@ -1178,6 +1186,7 @@ private fun MenuSheet(
                 SettingsSection(
                     streetEnabled = streetEnabled, onStreetToggle = onStreetToggle,
                     mapThemeMode = mapThemeMode, onMapThemeChange = onMapThemeChange,
+                    textSizeLevel = textSizeLevel, onTextSizeChange = onTextSizeChange,
                 )
             }
         }
@@ -1191,6 +1200,8 @@ private fun SettingsSection(
     onStreetToggle: (Boolean) -> Unit,
     mapThemeMode: com.mikeos.maps.ui.MapTheme.Mode,
     onMapThemeChange: (com.mikeos.maps.ui.MapTheme.Mode) -> Unit,
+    textSizeLevel: com.mikeos.maps.ui.TextSize.Level = com.mikeos.maps.ui.TextSize.Level.NORMAL,
+    onTextSizeChange: (com.mikeos.maps.ui.TextSize.Level) -> Unit = {},
 ) {
     Spacer(Modifier.height(6.dp))
     Row(
@@ -1229,6 +1240,35 @@ private fun SettingsSection(
             ) {
                 Text(
                     label, textAlign = TextAlign.Center, fontSize = 13.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                )
+            }
+        }
+    }
+
+    // Text size — an accessibility control for the on-map business-name labels (readable at arm's length).
+    Spacer(Modifier.height(14.dp))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.FormatSize, contentDescription = null, tint = MikeAccent)
+        Spacer(Modifier.width(14.dp))
+        Text("Map text size", color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+    }
+    Spacer(Modifier.height(6.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        com.mikeos.maps.ui.TextSize.Level.entries.forEach { lvl ->
+            val selected = lvl == textSizeLevel
+            Surface(
+                onClick = { onTextSizeChange(lvl) },
+                shape = RoundedCornerShape(12.dp),
+                color = if (selected) MikeAccent else MikeSurface,
+                contentColor = if (selected) MikeBg else MikeOnSurface,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(
+                    lvl.label, textAlign = TextAlign.Center,
+                    // Preview the size right on the chip so the effect is obvious.
+                    fontSize = (13f * lvl.scale).sp,
                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
                 )

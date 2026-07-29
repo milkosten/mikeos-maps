@@ -62,10 +62,12 @@ object FrEnterprises {
                     val name = o.optString("name").takeUnless { it.isBlank() } ?: return@mapNotNull null
                     val lat = o.optDouble("lat"); val lon = o.optDouble("lon")
                     if (lat.isNaN() || lon.isNaN()) return@mapNotNull null
+                    val cat = categoryOf(o.optString("category"))
                     NearbySearch.Place(
                         name = name, lat = lat, lon = lon,
-                        category = categoryOf(o.optString("category")),
+                        category = cat,
                         distanceM = 0, alongM = null, detail = null,
+                        icon = NearbySearch.iconForKind(o.optString("kind").takeUnless { it.isBlank() }, cat),
                     )
                 }
             }

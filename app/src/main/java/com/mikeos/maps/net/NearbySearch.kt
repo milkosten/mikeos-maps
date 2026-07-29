@@ -47,6 +47,7 @@ object NearbySearch {
         val distanceM: Int,      // straight-line distance from the search anchor
         val alongM: Int?,        // distance ALONG the route (set for along-route results, else null)
         val detail: String?,     // "paid · covered · 120 spaces" etc.
+        val icon: String = "📍", // category emoji shown on the map (fork-knife, beer, scissors, cart…)
     )
 
     // The union of everything we surface, as THREE value-regex clauses over the given area [a] (a point
@@ -81,7 +82,7 @@ object NearbySearch {
             Place(
                 name = nameOf(tags, cat), lat = plat, lon = plon, category = cat,
                 distanceM = (NavGeo.haversineKm(lat, lon, plat, plon) * 1000.0).toInt(),
-                alongM = null, detail = detailOf(tags, cat),
+                alongM = null, detail = detailOf(tags, cat), icon = iconOf(tags),
             )
         }
         places
@@ -115,7 +116,7 @@ object NearbySearch {
             Place(
                 name = nameOf(tags, cat), lat = plat, lon = plon, category = cat,
                 distanceM = (NavGeo.haversineKm(curLat, curLon, plat, plon) * 1000.0).toInt(),
-                alongM = along, detail = detailOf(tags, cat),
+                alongM = along, detail = detailOf(tags, cat), icon = iconOf(tags),
             )
         }
         places
@@ -156,7 +157,7 @@ object NearbySearch {
         run(ql) { plat, plon, cat, tags ->
             Place(
                 name = nameOf(tags, cat), lat = plat, lon = plon, category = cat,
-                distanceM = 0, alongM = null, detail = detailOf(tags, cat),
+                distanceM = 0, alongM = null, detail = detailOf(tags, cat), icon = iconOf(tags),
             )
         }.distinctBy { key(it) }.take(limit)
     }
@@ -204,6 +205,141 @@ object NearbySearch {
         when (tags.optString("highway")) { "rest_area", "services" -> return Category.REST }
         return Category.OTHER
     }
+
+    /**
+     * A recognizable **emoji** for a POI, derived from its raw OSM tags — the icon that replaces the
+     * anonymous colour dot on the map (fork-knife=restaurant, beer=bar, scissors=hairdresser,
+     * cart=supermarket, …). Far finer than [Category] (which buckets everything odd into OTHER); the
+     * map registers [ALL_ICONS] as images and picks per-feature. Falls back to a plain pin.
+     */
+    fun iconOf(tags: JSONObject): String {
+        when (tags.optString("shop")) {
+            "bakery", "pastry" -> return "🥖"
+            "supermarket" -> return "🛒"
+            "convenience", "kiosk" -> return "🏪"
+            "hairdresser" -> return "✂️"
+            "beauty", "cosmetics", "nails" -> return "💅"
+            "butcher" -> return "🥩"
+            "greengrocer", "farm" -> return "🥦"
+            "florist", "garden_centre" -> return "💐"
+            "clothes", "boutique", "fashion" -> return "👕"
+            "shoes" -> return "👟"
+            "jewelry", "jewellery" -> return "💍"
+            "books", "stationery" -> return "📚"
+            "optician" -> return "👓"
+            "hardware", "doityourself", "trade" -> return "🔧"
+            "car", "car_repair", "tyres" -> return "🚗"
+            "bicycle" -> return "🚲"
+            "electronics", "mobile_phone", "computer" -> return "💻"
+            "chemist", "chemist_shop" -> return "🧴"
+            "laundry", "dry_cleaning" -> return "🧺"
+            "wine", "alcohol", "beverages" -> return "🍷"
+            "pet" -> return "🐾"
+            "toys" -> return "🧸"
+            "hardware_store" -> return "🔧"
+            "" -> {}
+            else -> return "🛍️"   // any other named shop
+        }
+        when (tags.optString("amenity")) {
+            "restaurant", "food_court" -> return "🍴"
+            "cafe" -> return "☕"
+            "fast_food" -> return "🍔"
+            "bar", "pub", "biergarten" -> return "🍺"
+            "nightclub" -> return "🍸"
+            "ice_cream" -> return "🍦"
+            "pharmacy" -> return "💊"
+            "bank" -> return "🏦"
+            "atm", "bureau_de_change" -> return "🏧"
+            "fuel" -> return "⛽"
+            "charging_station" -> return "🔌"
+            "hospital", "clinic", "doctors" -> return "🏥"
+            "dentist" -> return "🦷"
+            "veterinary" -> return "🐾"
+            "post_office" -> return "✉️"
+            "police" -> return "🚓"
+            "library" -> return "📚"
+            "cinema" -> return "🎬"
+            "theatre" -> return "🎭"
+            "parking", "parking_entrance" -> return "🅿️"
+            "toilets" -> return "🚻"
+            "marketplace" -> return "🧺"
+            "townhall" -> return "🏛️"
+        }
+        when (tags.optString("tourism")) {
+            "hotel", "guest_house", "hostel", "motel", "chalet", "apartment" -> return "🏨"
+            "museum", "gallery" -> return "🏛️"
+            "attraction", "viewpoint", "artwork" -> return "📸"
+            "information" -> return "ℹ️"
+        }
+        when (tags.optString("leisure")) {
+            "fitness_centre", "sports_centre", "stadium" -> return "🏋️"
+            "park", "garden" -> return "🌳"
+            "marina" -> return "⛵"
+        }
+        if (tags.optString("craft").isNotBlank()) return "🔨"
+        if (tags.optString("office").isNotBlank()) return "💼"
+        return "📍"
+    }
+
+    /** Emoji for an OSM-ish `kind` string (the shape SIRENE emits: restaurant/bakery/hairdresser…). */
+    fun iconForKind(kind: String?, cat: Category): String = when (kind) {
+        "restaurant" -> "🍴"
+        "bar" -> "🍺"
+        "bakery" -> "🥖"
+        "butcher" -> "🥩"
+        "supermarket" -> "🛒"
+        "greengrocer" -> "🥦"
+        "seafood" -> "🐟"
+        "wine" -> "🍷"
+        "tobacco" -> "🚬"
+        "convenience" -> "🏪"
+        "department_store" -> "🏬"
+        "electronics" -> "💻"
+        "houseware" -> "🍳"
+        "books" -> "📚"
+        "clothes" -> "👕"
+        "shoes" -> "👟"
+        "pharmacy", "medical_supply" -> "💊"
+        "cosmetics", "beauty" -> "💅"
+        "florist" -> "💐"
+        "jewelry" -> "💍"
+        "fuel" -> "⛽"
+        "hairdresser" -> "✂️"
+        "laundry" -> "🧺"
+        "repair" -> "🔧"
+        "bank" -> "🏦"
+        "hotel", "guest_house" -> "🏨"
+        "campsite" -> "⛺"
+        "doctors", "clinic" -> "🏥"
+        "dentist" -> "🦷"
+        "veterinary" -> "🐾"
+        "cinema" -> "🎬"
+        "theatre" -> "🎭"
+        "museum" -> "🏛️"
+        "fitness", "sports" -> "🏋️"
+        "second_hand", "shop" -> "🛍️"
+        else -> iconForCategory(cat)
+    }
+
+    /** Emoji for a coarse [Category] (used where we only have the bucket, e.g. SIRENE businesses). */
+    fun iconForCategory(cat: Category): String = when (cat) {
+        Category.PARKING -> "🅿️"
+        Category.FUEL -> "⛽"
+        Category.CHARGING -> "🔌"
+        Category.FOOD -> "🍴"
+        Category.SHOP -> "🛒"
+        Category.REST -> "🚻"
+        Category.CASH -> "🏦"
+        Category.OTHER -> "📍"
+    }
+
+    /** Every emoji [iconOf]/[iconForCategory] can return — the map pre-registers these as icon images. */
+    val ALL_ICONS: List<String> = listOf(
+        "🥖", "🛒", "🏪", "✂️", "💅", "🥩", "🥦", "💐", "👕", "👟", "💍", "📚", "👓", "🔧", "🚗", "🚲",
+        "💻", "🧴", "🧺", "🍷", "🐾", "🧸", "🛍️", "🍴", "☕", "🍔", "🍺", "🍸", "🍦", "💊", "🏦", "🏧",
+        "⛽", "🔌", "🏥", "🦷", "✉️", "🚓", "🎬", "🎭", "🅿️", "🚻", "🏛️", "🏨", "📸", "ℹ️", "🏋️", "🌳",
+        "⛵", "🔨", "💼", "🐟", "🚬", "🏬", "🍳", "⛺", "📍",
+    )
 
     private fun nameOf(tags: JSONObject, cat: Category): String {
         tags.optString("name").takeUnless { it.isBlank() }?.let { return it }
