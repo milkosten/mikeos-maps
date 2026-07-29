@@ -239,8 +239,7 @@ private fun installOverlays(style: Style, accent: Int) {
             PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
             PropertyFactory.textSize(AMBIENT_LABEL_SIZE),
             PropertyFactory.textColor(poiTextColor()),
-            PropertyFactory.textHaloColor(android.graphics.Color.WHITE),
-            PropertyFactory.textHaloWidth(2.0f),
+            PropertyFactory.textHaloWidth(0f),   // ONE solid colour — no outline
             PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
             PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
             PropertyFactory.textOptional(true),
@@ -278,8 +277,7 @@ private fun installOverlays(style: Style, accent: Int) {
             PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
             PropertyFactory.textSize(11f),
             PropertyFactory.textColor(poiTextColor()),
-            PropertyFactory.textHaloColor(android.graphics.Color.WHITE),
-            PropertyFactory.textHaloWidth(2.0f),
+            PropertyFactory.textHaloWidth(0f),   // ONE solid colour — no outline
             PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
             PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
             PropertyFactory.textOptional(true),
@@ -491,8 +489,8 @@ private fun poiTextColor(): Expression = Expression.match(
     Expression.literal("SHOP"), Expression.color(android.graphics.Color.parseColor("#6741D9")),   // retail — violet
     Expression.literal("STAY"), Expression.color(android.graphics.Color.parseColor("#2B8A3E")),   // lodging/sights — green
     Expression.literal("AUTO"), Expression.color(android.graphics.Color.parseColor("#E67700")),   // fuel/repair — amber
-    Expression.literal("CIVIC"), Expression.color(android.graphics.Color.parseColor("#1971C2")),  // civic/leisure — blue
-    Expression.color(android.graphics.Color.parseColor("#343A40")),                               // OTHER — dark slate
+    Expression.literal("CIVIC"), Expression.color(android.graphics.Color.parseColor("#1565C0")),  // civic/leisure — blue
+    Expression.color(android.graphics.Color.parseColor("#5F6B7A")),                               // OTHER — slate grey
 )
 
 /**
