@@ -71,9 +71,19 @@ object Geocoder {
         val enc = URLEncoder.encode(q, "UTF-8")
         val out = LinkedHashMap<String, Place>()   // insertion-ordered, deduped by rounded coords
 
-        // 1) Photon FIRST — location-biased + partial-tolerant. This is what fixes "15 boulevard
-        //    general": Photon returns the local street; Nominatim returned 0 (bounded) or global junk.
+        // 1) Photon FIRST — partial-tolerant, TWO passes. Photon's soft lat/lon bias is too weak: a
+        //    "39 avenue de republic" typed in Nice returned only streets in DR Congo / Sudan (a far
+        //    namesake outranked the local street, which never even entered the result set). So we do a
+        //    HARD local-bbox pass around the user first (a namesake 3000 km away is excluded outright),
+        //    THEN a worldwide pass for genuinely far destinations. The caller ranks by distance, so the
+        //    local hit wins when it exists; far ones still appear (ranked last) when nothing local does.
         if (BuildConfig.PHOTON_URL.isNotBlank()) {
+            if (nearLat != null && nearLon != null) {
+                val d = 2.5   // ~275 km box; Photon bbox = minLon,minLat,maxLon,maxLat
+                val bbox = "${nearLon - d},${nearLat - d},${nearLon + d},${nearLat + d}"
+                for (p in runPhoton("${BuildConfig.PHOTON_URL}/api?q=$enc&limit=$limit&bbox=$bbox&lat=$nearLat&lon=$nearLon"))
+                    out.putIfAbsent(key(p), p)
+            }
             val bias = if (nearLat != null && nearLon != null) "&lat=$nearLat&lon=$nearLon" else ""
             for (p in runPhoton("${BuildConfig.PHOTON_URL}/api?q=$enc&limit=$limit$bias"))
                 out.putIfAbsent(key(p), p)

@@ -35,6 +35,14 @@ object StreetStore {
         return File(root(context), name).apply { mkdirs() }
     }
 
+    /** The session dir currently being written for [tripId] (its `trip-<id8>` prefix), or null — so a
+     *  background upload pass never touches / prematurely marks the drive still in progress. */
+    fun activeSession(context: Context, tripId: String?): File? {
+        if (tripId.isNullOrBlank()) return null
+        val prefix = "trip-${tripId.take(8)}"
+        return root(context).listFiles { f -> f.isDirectory && f.name.startsWith(prefix) }?.maxByOrNull { it.name }
+    }
+
     /** Mark a session fully uploaded to the lake — the GC evicts these first. */
     fun markUploaded(session: File) = runCatching { File(session, UPLOADED_MARKER).writeText("1") }
     private fun isUploaded(session: File) = File(session, UPLOADED_MARKER).exists()

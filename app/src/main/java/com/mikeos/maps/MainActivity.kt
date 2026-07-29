@@ -10,6 +10,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -168,6 +176,9 @@ class MainActivity : ComponentActivity() {
         // MikeStreet capture (P1) — opt-in dashboard imagery.
         com.mikeos.maps.street.MikeStreet.init(this)
         streetCapture = com.mikeos.maps.street.StreetCapture(this)
+        // Durable upload drain: a periodic WorkManager safety-net so stranded drives always reach the
+        // lake even if the app is killed right after a drive (survives death/Doze, retries with backoff).
+        com.mikeos.maps.street.StreetUploader.enqueuePeriodic(this)
         // Map appearance + ambient-light auto light/dark.
         com.mikeos.maps.ui.MapTheme.init(this)
         lightSensor = com.mikeos.maps.ui.LightSensor(this)
@@ -272,6 +283,7 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
     val navInfo by vm.navInfo.collectAsStateWithLifecycle()
     val speedLimit by vm.speedLimit.collectAsStateWithLifecycle()
     val guidance by vm.guidance.collectAsStateWithLifecycle()
+    val ambientPois by vm.ambientPois.collectAsStateWithLifecycle()
     val mapStyleUrl by com.mikeos.maps.ui.MapTheme.styleUrl.collectAsStateWithLifecycle()
     val mapThemeMode by com.mikeos.maps.ui.MapTheme.mode.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -288,9 +300,10 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
         onDispose { vm.stopLiveLocation() }
     }
 
-    // Follow the dot everywhere EXCEPT while previewing a route (then we frame the whole route).
-    LaunchedEffect(state.previewing, active != null) {
-        follow = !state.previewing
+    // Follow the dot while driving/idle; turn follow OFF while previewing or trip-planning so the map
+    // frames the route / flies to the chosen destination instead of chasing the puck.
+    LaunchedEffect(state.previewing, active != null, state.planScreen) {
+        follow = active != null || (!state.previewing && state.planScreen == PlanScreen.NONE)
     }
 
     Box(Modifier.fillMaxSize().background(MikeBg)) {
@@ -308,6 +321,9 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
             onMapTapEmpty = { vm.dismissTappedPlace() },
             poiResults = state.nearby,
             onPoiResultTap = { vm.chooseNearby(it) },
+            ambientPois = ambientPois,
+            onViewportChanged = { s, w, n, e, z -> vm.onViewport(s, w, n, e, z) },
+            focusPoint = state.planDest?.let { com.mikeos.maps.net.PolylineCodec.LatLon(it.lat, it.lon) },
             styleUrl = mapStyleUrl,
             modifier = Modifier.fillMaxSize(),
         )
@@ -333,13 +349,8 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
             )
         }
 
-        // Speed-limit sign + your current speed (bottom-left) — the posted limit for the road you're on;
-        // the speed turns red when you're over it.
-        SpeedLimitBadge(
-            limit = speedLimit,
-            speedKmh = location?.speedKmh ?: 0.0,
-            modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 150.dp),
-        )
+        // (Speed-limit sign now lives just above the HUD — see the bottom overlay — so it's never
+        // covered by the panel, and the current speed is shown ONCE, in the HUD, coloured by over-limit.)
 
         // Top overlay: the turn-by-turn banner while navigating, else the ☰ menu + agent window.
         Box(
@@ -408,8 +419,28 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
             }
 
             val a = active
+            // Speed-limit sign floats just ABOVE the HUD, left-aligned — always fully visible (never
+            // under the panel), shown only while navigating with a known posted limit.
+            if (a != null && speedLimit != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                    SpeedLimitSign(speedLimit!!)
+                }
+                Spacer(Modifier.height(10.dp))
+            }
             when {
-                a != null -> DrivingHud(a, navInfo, busy = state.busy, onEnd = { vm.endTrip() })
+                a != null -> DrivingHud(a, navInfo, busy = state.busy, speedLimit = speedLimit, onEnd = { vm.endTrip() })
+                state.planScreen == PlanScreen.PLANNER -> TripPlannerPanel(
+                    state = state, busy = state.busy,
+                    onEditOrigin = { vm.openOriginSearch() },
+                    onUseMyPosition = { vm.useMyPosition() },
+                    onEditDest = { vm.openSearch() },
+                    onStart = { vm.startPreviewed() },
+                    onClose = { vm.closePlan() },
+                )
+                state.planScreen == PlanScreen.DEST_PREVIEW -> DestPreviewCard(
+                    dest = state.planDest!!, busy = state.busy,
+                    onTravel = { vm.beginTravel() }, onDismiss = { vm.closePlan() },
+                )
                 state.previewing -> RoutePreviewPanel(
                     state = state,
                     busy = state.busy,
@@ -423,8 +454,19 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
                     onDirections = { vm.directionsToTappedPlace() },
                     onDismiss = { vm.dismissTappedPlace() },
                 )
-                else -> WhereToBar(location, onClick = { menuOpen = true })
+                else -> WhereToBar(location, onClick = { vm.openSearch() })
             }
+        }
+
+        // Full-screen destination/origin search — input at top, results above the keyboard. On top.
+        if (state.planScreen == PlanScreen.SEARCH) {
+            DestinationSearchScreen(
+                state = state,
+                onQueryChange = vm::onQueryChange,
+                onPick = { vm.pickPlanResult(it) },
+                onBack = { vm.backFromSearch() },
+                nearLat = location?.lat, nearLon = location?.lon,
+            )
         }
     }
 
@@ -653,9 +695,11 @@ private fun DrivingHud(
     a: TripManager.ActiveTrip,
     navInfo: NavInfo?,
     busy: Boolean,
+    speedLimit: Int?,
     onEnd: () -> Unit,
 ) {
     val speed = navInfo?.speedKmh ?: a.lastSpeedKmh ?: 0.0
+    val speedColor = speedColorFor(speed, speedLimit)   // blue when legal, red (redder) when over
     val remKm = navInfo?.remainingKm ?: a.km
     val remMin = navInfo?.remainingMin ?: a.etaMin
     val eta = navInfo?.etaClock ?: NavFormat.eta(a.etaMin)
@@ -677,7 +721,7 @@ private fun DrivingHud(
             }
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Metric("${speed.roundToInt()}", "km/h", hero = true)
+                Metric("${speed.roundToInt()}", "km/h", hero = true, heroColor = speedColor)
                 Metric(NavFormat.distance(remKm), "to go")
                 Metric(NavFormat.duration(remMin), "drive")
                 Metric(eta, "arrival")
@@ -854,6 +898,158 @@ private fun NoticePill(text: String) {
 }
 
 // ---- Menu / search sheet -------------------------------------------------------------------
+
+@Composable
+private fun DestinationSearchScreen(
+    state: MapsState,
+    onQueryChange: (String) -> Unit,
+    onPick: (Suggestion) -> Unit,
+    onBack: () -> Unit,
+    nearLat: Double?,
+    nearLon: Double?,
+) {
+    // Full-screen search: input pinned at TOP, results fill the middle and sit right above the
+    // keyboard (imePadding). Field owns its text (no state.query feedback loop — see MenuSheet note).
+    var field by remember { mutableStateOf(TextFieldValue(state.query, TextRange(state.query.length))) }
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(state.searchingOrigin) { runCatching { focusRequester.requestFocus() } }
+    val hint = if (state.searchingOrigin) "Start from…" else "Where to?"
+    Column(Modifier.fillMaxSize().background(MikeBg).systemBarsPadding().imePadding()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = MikeOnSurface) }
+            OutlinedTextField(
+                value = field,
+                onValueChange = { field = it; onQueryChange(it.text) },
+                modifier = Modifier.weight(1f).focusRequester(focusRequester),
+                placeholder = { Text(hint, color = MikeMuted) },
+                shape = RoundedCornerShape(14.dp),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                trailingIcon = {
+                    if (field.text.isNotEmpty()) IconButton(onClick = { field = TextFieldValue(""); onQueryChange("") }) {
+                        Icon(Icons.Filled.Close, "Clear", tint = MikeMuted)
+                    }
+                },
+            )
+        }
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
+            items(state.suggestions) { s ->
+                SuggestionRow(
+                    s = s, saved = false, nearLat = nearLat, nearLon = nearLon,
+                    onClick = { onPick(s) }, onToggleSave = {},
+                )
+            }
+            if (state.suggestions.isEmpty()) {
+                item {
+                    Spacer(Modifier.height(16.dp))
+                    when {
+                        state.busy -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(16.dp), color = MikeAccent, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(10.dp)); Text("Searching…", color = MikeMuted, fontSize = 14.sp)
+                        }
+                        state.query.isNotBlank() -> Text(state.notice ?: "No places found.", color = MikeMuted, fontSize = 14.sp)
+                        else -> Text("Type an address or place.", color = MikeMuted, fontSize = 14.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DestPreviewCard(dest: PlacePoint, busy: Boolean, onTravel: () -> Unit, onDismiss: () -> Unit) {
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MikeSurface)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Place, null, tint = MikeAccent)
+                Spacer(Modifier.width(10.dp))
+                Text(dest.name, color = MikeOnSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, "Close", tint = MikeMuted) }
+            }
+            Spacer(Modifier.height(14.dp))
+            Button(
+                onClick = onTravel, enabled = !busy, modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MikeAccent, contentColor = MikeBg),
+            ) {
+                Icon(Icons.Filled.PlayArrow, null); Spacer(Modifier.width(8.dp))
+                Text("Travel", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TripPlannerPanel(
+    state: MapsState,
+    busy: Boolean,
+    onEditOrigin: () -> Unit,
+    onUseMyPosition: () -> Unit,
+    onEditDest: () -> Unit,
+    onStart: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val origin = state.planOrigin
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MikeSurface)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Trip", color = MikeOnSurface, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close", tint = MikeMuted) }
+            }
+            PlannerRow(Icons.Filled.MyLocation, "From", origin?.name ?: "My position", MikeGreen, onEditOrigin)
+            if (origin != null) {
+                TextButton(onClick = onUseMyPosition, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                    Text("Use my position", color = MikeAccent, fontSize = 13.sp)
+                }
+            }
+            PlannerRow(Icons.Filled.Place, "To", state.planDest?.name ?: "—", MikeAccent, onEditDest)
+            Spacer(Modifier.height(12.dp))
+            if (busy && state.routeKm == null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), color = MikeAccent, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp)); Text("Finding the fastest route…", color = MikeMuted, fontSize = 13.sp)
+                }
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Metric(NavFormat.distance(state.routeKm ?: 0.0), "distance")
+                    Metric(NavFormat.duration(state.routeEtaMin ?: 0.0), "drive")
+                    if (origin == null) Metric(NavFormat.eta(state.routeEtaMin ?: 0.0), "arrival")
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            if (origin == null) {
+                Button(
+                    onClick = onStart, enabled = !busy && state.routeKm != null, modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MikeAccent, contentColor = MikeBg),
+                ) { Text("Start", fontWeight = FontWeight.Bold) }
+            } else {
+                Text("Preview from another location — that's how long it takes from there. Set From to “My position” to start navigating.",
+                    color = MikeMuted, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlannerRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String, tint: androidx.compose.ui.graphics.Color, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick).padding(vertical = 10.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = tint)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, color = MikeMuted, fontSize = 11.sp)
+            Text(value, color = MikeOnSurface, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Icon(Icons.Filled.Edit, "Edit", tint = MikeMuted, modifier = Modifier.size(18.dp))
+    }
+}
 
 @Composable
 private fun MenuSheet(
@@ -1047,29 +1243,25 @@ private fun SettingsSection(
  * you're over the limit.
  */
 @Composable
-private fun SpeedLimitBadge(limit: Int?, speedKmh: Double, modifier: Modifier = Modifier) {
-    if (limit == null || speedKmh < 5.0) return
-    val over = speedKmh > limit + 3   // small tolerance before flagging
-    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            Modifier.size(58.dp)
-                .clip(CircleShape)
-                .background(Color.White)
-                .border(5.dp, Color(0xFFD32F2F), CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text("$limit", color = Color.Black, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.height(6.dp))
-        Surface(shape = RoundedCornerShape(10.dp), color = if (over) MikeRed else MikeSurface.copy(alpha = 0.92f)) {
-            Text(
-                "${speedKmh.roundToInt()}",
-                color = if (over) Color.White else MikeOnSurface,
-                fontSize = 15.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            )
-        }
+private fun SpeedLimitSign(limit: Int, modifier: Modifier = Modifier) {
+    // Just the posted-limit sign (white disc, red ring). The current speed lives in the HUD, once,
+    // coloured by how far over the limit you are (see [speedColorFor]).
+    Box(
+        modifier.size(58.dp)
+            .clip(CircleShape)
+            .background(Color.White)
+            .border(5.dp, Color(0xFFD32F2F), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("$limit", color = Color.Black, fontSize = 22.sp, fontWeight = FontWeight.Bold)
     }
+}
+
+/** The current-speed colour: blue when legal/unknown, escalating red the more you exceed the limit. */
+private fun speedColorFor(speed: Double, limit: Int?): androidx.compose.ui.graphics.Color {
+    if (limit == null || speed <= limit + 2) return MikeAccent          // legal (or no limit) → blue
+    val t = ((speed - limit - 2) / 18.0).toFloat().coerceIn(0f, 1f)     // 0 just-over … 1 by ~+20 km/h
+    return androidx.compose.ui.graphics.lerp(Color(0xFFF2704B), Color(0xFFFF2A1F), t)  // red → redder
 }
 
 // ---- Small reusables -----------------------------------------------------------------------
@@ -1276,11 +1468,11 @@ private fun CircleButton(onClick: () -> Unit, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun Metric(value: String, label: String, hero: Boolean = false) {
+private fun Metric(value: String, label: String, hero: Boolean = false, heroColor: androidx.compose.ui.graphics.Color = MikeAccent) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             value,
-            color = if (hero) MikeAccent else MikeOnSurface,
+            color = if (hero) heroColor else MikeOnSurface,
             fontSize = if (hero) 26.sp else 17.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,

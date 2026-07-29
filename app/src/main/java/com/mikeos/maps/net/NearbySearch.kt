@@ -124,6 +124,43 @@ object NearbySearch {
             .take(limit)
     }
 
+    /**
+     * Every named business/POI inside a map viewport [south,west,north,east] — the "ambient overlay"
+     * that makes the map feel full (bakeries, pharmacies, hairdressers, banks, hotels… — the long tail
+     * the Protomaps basemap curates out of its vector tiles). A bbox+tag scan over a small viewport is
+     * the cheap Overpass pattern (~0.3-1 s on our self-hosted box). Best-effort: empty on failure.
+     */
+    suspend fun searchInBounds(
+        south: Double,
+        west: Double,
+        north: Double,
+        east: Double,
+        limit: Int = 140,
+    ): List<Place> = withContext(Dispatchers.IO) {
+        val d = "$"
+        val bbox = "($south,$west,$north,$east)"
+        // Broad net: all named shops/offices/crafts, the useful amenities, lodging + sights. `[name]`
+        // drops street furniture (benches, crossings) that would just be clutter.
+        val ql = """
+            [out:json][timeout:25];
+            (
+              nwr$bbox["shop"]["name"];
+              nwr$bbox["office"]["name"];
+              nwr$bbox["craft"]["name"];
+              nwr$bbox["amenity"~"^(restaurant|cafe|fast_food|bar|pub|food_court|ice_cream|bank|atm|pharmacy|fuel|charging_station|cinema|theatre|nightclub|marketplace|post_office|clinic|doctors|dentist|hospital|veterinary|library|townhall|police|fuel)$d"]["name"];
+              nwr$bbox["tourism"~"^(hotel|guest_house|hostel|motel|museum|gallery|attraction|artwork|viewpoint|information)$d"]["name"];
+              nwr$bbox["leisure"~"^(fitness_centre|sports_centre|park|garden|marina)$d"]["name"];
+            );
+            out center tags $limit;
+        """.trimIndent()
+        run(ql) { plat, plon, cat, tags ->
+            Place(
+                name = nameOf(tags, cat), lat = plat, lon = plon, category = cat,
+                distanceM = 0, alongM = null, detail = detailOf(tags, cat),
+            )
+        }.distinctBy { key(it) }.take(limit)
+    }
+
     // ---- shared plumbing ----------------------------------------------------------------------
 
     private inline fun run(ql: String, build: (Double, Double, Category, JSONObject) -> Place): List<Place> {

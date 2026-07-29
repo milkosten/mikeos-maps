@@ -100,11 +100,15 @@ class StreetCapture(private val activity: ComponentActivity) {
         Log.i(TAG, "camera released (no active journey)")
     }
 
-    /** Throttled, WiFi-preferred sync of completed drives to the lake. */
+    /** Throttled sync of completed drives to the lake — via a DURABLE WorkManager drain (survives app
+     *  death/Doze, retries with backoff until the backlog is empty), plus an immediate opportunistic
+     *  pass while we're foreground on WiFi. */
     private fun maybeUpload() {
         val now = System.currentTimeMillis()
         if (now - lastUploadAt > UPLOAD_INTERVAL_MS) {
             lastUploadAt = now
+            StreetUploader.enqueue(activity)           // durable: drains + retries even if the app dies
+            StreetUploader.enqueuePeriodic(activity)    // idempotent safety-net (KEEP)
             activity.lifecycleScope.launch { runCatching { StreetUploader.uploadPending(activity, session) } }
         }
     }

@@ -11,6 +11,7 @@ import com.mikeos.maps.data.SavedPlace
 import com.mikeos.maps.nav.NavInfo
 import com.mikeos.maps.nav.Speaker
 import com.mikeos.maps.net.DaemonLocation
+import com.mikeos.maps.net.FrEnterprises
 import com.mikeos.maps.net.Geocoder
 import com.mikeos.maps.net.NearbySearch
 import com.mikeos.maps.net.OfflinePrefetch
@@ -20,12 +21,19 @@ import com.mikeos.maps.net.SpeedLimit
 import com.mikeos.maps.net.TripsCloudClient
 import com.mikeos.maps.trips.TripManager
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+// Ambient POI overlay: only fetch while browsing at street zoom, and debounce pans so we don't spam
+// Overpass. z15.5 ≈ close street level (POIs are relevant); below that the map is too broad.
+private const val AMBIENT_MIN_ZOOM = 15.5
+private const val AMBIENT_DEBOUNCE_MS = 350L
+private const val PREFS = "maps_prefs"
 
 /** A type-ahead destination suggestion — from trip history (coords null → re-geocoded) or Nominatim. */
 data class Suggestion(
@@ -66,7 +74,19 @@ data class MapsState(
     val nearbyMode: String = "dest",           // "dest" (at destination) | "route" (along the road) | "you"
     val nearbyHasRoute: Boolean = false,       // a route exists → offer the At-destination/Along-route toggle
     val nearby: List<NearbySearch.Place> = emptyList(),
+    // --- Destination-first trip planner (full-screen search → dest preview → From→To) ---
+    val planScreen: PlanScreen = PlanScreen.NONE,
+    val planDest: PlacePoint? = null,          // chosen destination
+    val planOrigin: PlacePoint? = null,        // null = "My position"; else a custom start address
+    val searchingOrigin: Boolean = false,      // in the SEARCH screen, are we picking the origin (vs dest)?
 )
+
+/** A named coordinate used by the trip planner (destination / custom origin). */
+data class PlacePoint(val name: String, val lat: Double, val lon: Double)
+
+/** The trip-planner screen: NONE = map; SEARCH = full-screen search; DEST_PREVIEW = dest chosen +
+ *  Travel button; PLANNER = From→To with route time. */
+enum class PlanScreen { NONE, SEARCH, DEST_PREVIEW, PLANNER }
 
 /** A feature the user tapped on the map surface, offered for one-tap directions. */
 data class TappedPoi(val name: String, val lat: Double, val lon: Double)
@@ -102,8 +122,41 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     private val _guidance = MutableStateFlow<Guidance?>(null)
     val guidance: StateFlow<Guidance?> = _guidance.asStateFlow()
 
+    /** Ambient viewport POIs — every named OSM business in view (the long tail the basemap curates out),
+     *  drawn as tappable pins so the map feels full. Fetched from Overpass while BROWSING at street zoom;
+     *  empty while navigating or zoomed out. See [onViewport]. */
+    private val _ambientPois = MutableStateFlow<List<NearbySearch.Place>>(emptyList())
+    val ambientPois: StateFlow<List<NearbySearch.Place>> = _ambientPois.asStateFlow()
+    private var ambientJob: Job? = null
+    private var ambientLastKey: String? = null
+
     private var locationJob: Job? = null
     private var suggestJob: Job? = null
+
+    // Last-known location (persisted) — the bias/ranking fallback for search when the live daemon fix
+    // isn't ready yet (e.g. a search right after opening the app). Without it, "Risso" typed before the
+    // first fix biases nowhere and a far-away namesake (a village in Uruguay) wins.
+    @Volatile private var lastKnownLat: Double? = null
+    @Volatile private var lastKnownLon: Double? = null
+
+    init {
+        runCatching {
+            val p = getApplication<Application>().getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            if (p.contains("lastLat")) {
+                lastKnownLat = p.getFloat("lastLat", 0f).toDouble()
+                lastKnownLon = p.getFloat("lastLon", 0f).toDouble()
+            }
+        }
+    }
+
+    private fun rememberLocation(lat: Double, lon: Double) {
+        lastKnownLat = lat
+        lastKnownLon = lon
+        runCatching {
+            getApplication<Application>().getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+                .edit().putFloat("lastLat", lat.toFloat()).putFloat("lastLon", lon.toFloat()).apply()
+        }
+    }
 
     // A previewed-but-not-started route (see [preview] → [startPreviewed] / [cancelPreview]).
     private var pendingPlace: Geocoder.Place? = null
@@ -168,6 +221,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
                 val fix = trips.currentFix()
                 if (fix != null) {
                     _location.value = fix
+                    rememberLocation(fix.lat, fix.lon)   // bias fallback for search before the next open's first fix
                     // Keep ~100 km around Mike cached so the map is instant / offline-resilient.
                     OfflinePrefetch.ensureAround(getApplication(), fix.lat, fix.lon)
                     recomputeNav(fix)
@@ -362,6 +416,10 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun suggestFor(query: String, includePoi: Boolean = false): List<Suggestion> {
         val near = _location.value
+        // Bias + rank by the live fix, falling back to the last-known location so a search fired before
+        // the first daemon fix still favours where you are (Nice), not a far namesake (Uruguay).
+        val bLat = near?.lat ?: lastKnownLat
+        val bLon = near?.lon ?: lastKnownLon
         val local = runCatching { PlacesRepo.search(getApplication(), query, 5) }
             .getOrDefault(emptyList())
             .map { Suggestion(it.label, it.lat, it.lon, fromHistory = true) }
@@ -371,17 +429,17 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             .distinct()
             .take(2)
             .map { Suggestion(it, null, null, fromHistory = true) }
-        val poi = if (includePoi && near != null) {
+        val poi = if (includePoi && bLat != null && bLon != null) {
             // Fetch the full nearby set (proximity query) so the closest-first sort below is correct.
-            runCatching { PoiSearch.search(query, near.lat, near.lon, 40) }.getOrDefault(emptyList())
+            runCatching { PoiSearch.search(query, bLat, bLon, 40) }.getOrDefault(emptyList())
                 .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false) }
         } else emptyList()
-        val online = runCatching { Geocoder.search(query, 8, near?.lat, near?.lon) }
+        val online = runCatching { Geocoder.search(query, 8, bLat, bLon) }
             .getOrDefault(emptyList())
             .map { Suggestion(it.name, it.lat, it.lon, fromHistory = false, category = it.category) }
         fun shortKey(s: Suggestion) = s.label.substringBefore(",").trim().lowercase()
         fun distKm(s: Suggestion) =
-            if (near != null && s.lat != null && s.lon != null) NavGeo.haversineKm(near.lat, near.lon, s.lat, s.lon)
+            if (bLat != null && bLon != null && s.lat != null && s.lon != null) NavGeo.haversineKm(bLat, bLon, s.lat, s.lon)
             else Double.MAX_VALUE
         // Dedup by short name, but keep the NEAREST instance of each — so "Super U" resolves to the
         // store you're next to, not a farther namesake that merely ranked first (which used to get
@@ -395,7 +453,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         val merged = best.values.toList()
         // FOCUS ON THE CLOSEST: rank by distance from the user (a namesake 1000 km away must never
         // beat the one you're standing at). Coordless history names sink to the end.
-        return if (near != null) merged.sortedBy { distKm(it) }.take(8) else merged.take(8)
+        return if (bLat != null) merged.sortedBy { distKm(it) }.take(8) else merged.take(8)
     }
 
     /** A POI was tapped on the map → show the directions card (unless mid-trip or already previewing). */
@@ -408,6 +466,48 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             val cur = _state.value.tappedPlace
             if (cur?.lat == lat && cur.lon == lon) _state.value = _state.value.copy(tappedDetails = d)
         }
+    }
+
+    /**
+     * The map camera settled → refresh the ambient POI overlay for the visible box. Debounced +
+     * deduped, and only while BROWSING at street zoom: skipped when navigating or zoomed out so we
+     * never spam Overpass (and the driving view stays clean).
+     */
+    fun onViewport(south: Double, west: Double, north: Double, east: Double, zoom: Double) {
+        if (zoom < AMBIENT_MIN_ZOOM || active.value != null) {
+            ambientJob?.cancel()
+            ambientLastKey = null
+            if (_ambientPois.value.isNotEmpty()) _ambientPois.value = emptyList()
+            return
+        }
+        val key = "%.3f,%.3f,%.3f,%.3f".format(south, west, north, east)
+        if (key == ambientLastKey) return
+        ambientLastKey = key
+        ambientJob?.cancel()
+        ambientJob = viewModelScope.launch {
+            delay(AMBIENT_DEBOUNCE_MS)
+            // OSM (Overpass) + open French business data (france-enterprises-api), fetched concurrently
+            // and merged — OSM wins, SIRENE fills the gaps (shops/cafés not mapped in OSM).
+            val osmD = async { runCatching { NearbySearch.searchInBounds(south, west, north, east) }.getOrDefault(emptyList()) }
+            val frD = async { runCatching { FrEnterprises.searchInBounds(south, west, north, east) }.getOrDefault(emptyList()) }
+            val merged = mergePois(osmD.await(), frD.await())
+            if (ambientLastKey == key) _ambientPois.value = merged   // still the current viewport?
+        }
+    }
+
+    /** OSM POIs first; add a French-registry business only if it isn't already an OSM POI (same name
+     *  within ~60 m) — so we fill gaps without double-pinning the ones OSM already has. */
+    private fun mergePois(osm: List<NearbySearch.Place>, fr: List<NearbySearch.Place>): List<NearbySearch.Place> {
+        if (fr.isEmpty()) return osm
+        val out = osm.toMutableList()
+        for (f in fr) {
+            val dup = osm.any { o ->
+                o.name.equals(f.name, ignoreCase = true) &&
+                    NavGeo.haversineKm(o.lat, o.lon, f.lat, f.lon) * 1000 < 60
+            }
+            if (!dup) out.add(f)
+        }
+        return out
     }
 
     /** Empty-map tap (or Close on the card) → dismiss the tapped-POI card. */
@@ -428,6 +528,128 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         val t = _state.value.tappedPlace ?: return
         _state.value = _state.value.copy(tappedPlace = null)
         chooseSuggestion(Suggestion(t.name, t.lat, t.lon, fromHistory = false))
+    }
+
+    // ---- Destination-first trip planner (full-screen search → dest preview → From→To) --------------
+
+    /** Open the full-screen destination search (from "Where to?"). */
+    fun openSearch() {
+        if (active.value != null) { _state.value = _state.value.copy(notice = "A trip is already active. End it first."); return }
+        suggestJob?.cancel()
+        _state.value = _state.value.copy(planScreen = PlanScreen.SEARCH, searchingOrigin = false, query = "", suggestions = emptyList())
+    }
+
+    /** Open the full-screen search to pick a custom ORIGIN (from the planner's "From" row). */
+    fun openOriginSearch() {
+        suggestJob?.cancel()
+        _state.value = _state.value.copy(planScreen = PlanScreen.SEARCH, searchingOrigin = true, query = "", suggestions = emptyList())
+    }
+
+    /** A result was chosen in the full-screen search — route it to destination or origin. */
+    fun pickPlanResult(s: Suggestion) {
+        if (_state.value.searchingOrigin) pickOrigin(s) else pickDestination(s)
+    }
+
+    /** Resolve a suggestion to a concrete PlacePoint (its coords, else geocode the label). */
+    private suspend fun resolvePlace(s: Suggestion): PlacePoint? {
+        if (s.lat != null && s.lon != null) return PlacePoint(PlacesRepo.cleanLabel(s.label), s.lat, s.lon)
+        val p = trips.geocode(s.label) ?: return null
+        return PlacePoint(PlacesRepo.cleanLabel(p.name), p.lat, p.lon)
+    }
+
+    /** Destination picked → zoom the map to it and offer "Travel" (no route computed yet). */
+    fun pickDestination(s: Suggestion) {
+        suggestJob?.cancel()
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true, notice = null)
+            val place = resolvePlace(s) ?: run {
+                _state.value = _state.value.copy(busy = false, notice = "Couldn't find \"${s.label}\"."); return@launch
+            }
+            _state.value = _state.value.copy(
+                busy = false, planScreen = PlanScreen.DEST_PREVIEW, planDest = place, planOrigin = null,
+                query = "", suggestions = emptyList(),
+                routePoints = emptyList(), routeSteps = emptyList(), routeKm = null, routeEtaMin = null, destName = place.name,
+            )
+            runCatching { PlacesRepo.save(getApplication(), place.name, place.lat, place.lon) }
+        }
+    }
+
+    /** "Travel" pressed → open the From→To planner with My position as the default origin. */
+    fun beginTravel() {
+        if (_state.value.planDest == null) return
+        _state.value = _state.value.copy(planScreen = PlanScreen.PLANNER, planOrigin = null)
+        recomputePlanRoute()
+    }
+
+    /** Custom origin picked in the search → planner route from there. */
+    fun pickOrigin(s: Suggestion) {
+        suggestJob?.cancel()
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true, notice = null)
+            val place = resolvePlace(s) ?: run {
+                _state.value = _state.value.copy(busy = false, notice = "Couldn't find \"${s.label}\"."); return@launch
+            }
+            _state.value = _state.value.copy(busy = false, planScreen = PlanScreen.PLANNER, planOrigin = place, query = "", suggestions = emptyList())
+            recomputePlanRoute()
+        }
+    }
+
+    /** Reset the origin back to "My position". */
+    fun useMyPosition() {
+        if (_state.value.planOrigin == null) return
+        _state.value = _state.value.copy(planOrigin = null)
+        recomputePlanRoute()
+    }
+
+    /** Compute (or recompute) the planner route origin→dest and update the metrics + framed line. */
+    private fun recomputePlanRoute() {
+        val dest = _state.value.planDest ?: return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true, notice = "Routing…")
+            val origin = _state.value.planOrigin
+            val oLat: Double; val oLon: Double
+            var fix: DaemonLocation.Fix? = null
+            if (origin != null) { oLat = origin.lat; oLon = origin.lon } else {
+                fix = trips.currentFix()
+                if (fix == null) { _state.value = _state.value.copy(busy = false, notice = "No location fix from the daemon."); return@launch }
+                oLat = fix.lat; oLon = fix.lon
+            }
+            val route = trips.route(oLat, oLon, dest.lat, dest.lon)
+            if (route == null) { _state.value = _state.value.copy(busy = false, notice = "Couldn't compute a route to \"${dest.name}\"."); return@launch }
+            val points = runCatching { PolylineCodec.decode(route.polyline) }.getOrDefault(emptyList())
+            // Pending state so START works — but only when origin = My position (pendingFix != null).
+            pendingPlace = Geocoder.Place(dest.name, dest.lat, dest.lon)
+            pendingFix = fix
+            pendingRoute = route
+            resetGuidanceTrackers()
+            _state.value = _state.value.copy(
+                busy = false, notice = null,
+                routePoints = points, routeSteps = route.steps, routeKm = route.km, routeEtaMin = route.etaMin, destName = dest.name,
+            )
+        }
+    }
+
+    /** Back out of the whole planner flow → clean map. */
+    fun closePlan() {
+        suggestJob?.cancel()
+        pendingPlace = null; pendingFix = null; pendingRoute = null
+        _guidance.value = null
+        _state.value = _state.value.copy(
+            planScreen = PlanScreen.NONE, planDest = null, planOrigin = null, searchingOrigin = false,
+            query = "", suggestions = emptyList(),
+            routePoints = emptyList(), routeSteps = emptyList(), routeKm = null, routeEtaMin = null, destName = null,
+        )
+    }
+
+    /** Back within the SEARCH screen: to the planner/preview if a dest exists, else close. */
+    fun backFromSearch() {
+        suggestJob?.cancel()
+        val s = _state.value
+        _state.value = when {
+            s.searchingOrigin -> s.copy(planScreen = PlanScreen.PLANNER, query = "", suggestions = emptyList())
+            s.planDest != null -> s.copy(planScreen = PlanScreen.DEST_PREVIEW, query = "", suggestions = emptyList())
+            else -> { closePlan(); return }
+        }
     }
 
     /** Pick a suggestion → preview a route to it (using its coords, or re-geocoding a history hit). */
@@ -553,6 +775,8 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(
                 busy = false,
                 notice = if (id != null) null else "Trip created but the cloud didn't confirm it.",
+                // Trip is live → clear the planner so it doesn't re-appear when the trip ends.
+                planScreen = PlanScreen.NONE, planDest = null, planOrigin = null,
             )
         }
     }

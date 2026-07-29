@@ -4,6 +4,14 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import com.mikeos.maps.BuildConfig
 import com.mikeos.maps.net.Doh
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +89,8 @@ object StreetUploader {
             // silently strand drives again.
             val sessions = StreetStore.root(context).listFiles { f -> f.isDirectory }?.sortedBy { it.name }
                 ?: return@withContext 0
+            val backlog0 = pendingCount(context, activeSession)
+            if (backlog0 > 0) Log.i(TAG, "upload pass: $backlog0 pending trip(s) to drain")
             var stored = 0
             var failed = 0
             for (sess in sessions) {
@@ -101,10 +111,45 @@ object StreetUploader {
                     Log.w(TAG, "session ${sess.name} incomplete — NOT marked uploaded, will retry")
                 }
             }
-            if (stored > 0 || failed > 0) Log.i(TAG, "upload pass done: $stored stored, $failed failed")
+            val backlog1 = pendingCount(context, activeSession)
+            if (stored > 0 || failed > 0 || backlog0 > 0)
+                Log.i(TAG, "upload pass done: $stored stored, $failed failed, backlog now $backlog1 trip(s)")
             stored
         }
     }
+
+    /** Number of trips still awaiting upload (dirs with frames + no `.uploaded`, excluding the active
+     *  one). The durable backlog depth — logged + used by the worker to decide whether to retry. */
+    fun pendingCount(context: Context, activeSession: File? = null): Int {
+        val dirs = StreetStore.root(context).listFiles { f -> f.isDirectory } ?: return 0
+        return dirs.count { sess ->
+            sess != activeSession && !File(sess, ".uploaded").exists() &&
+                (sess.listFiles { f -> f.name.startsWith("frame_") && f.name.endsWith(".jpg") }?.isNotEmpty() == true)
+        }
+    }
+
+    /** Enqueue a durable one-shot drain (WorkManager: survives app death, retries with backoff). KEEP
+     *  so an in-progress drain isn't cancelled — it already flushes every pending trip. */
+    fun enqueue(context: Context) {
+        val req = OneTimeWorkRequestBuilder<StreetUploadWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(WORK_UPLOAD, ExistingWorkPolicy.KEEP, req)
+    }
+
+    /** A periodic safety-net drain (every few hours) so a backlog can never sit indefinitely even if no
+     *  trip ends soon. Idempotent (unique + KEEP). */
+    fun enqueuePeriodic(context: Context) {
+        val req = PeriodicWorkRequestBuilder<StreetUploadWorker>(3, TimeUnit.HOURS)
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.MINUTES)
+            .build()
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(WORK_UPLOAD_PERIODIC, ExistingPeriodicWorkPolicy.KEEP, req)
+    }
+
+    const val WORK_UPLOAD = "mikestreet-upload"
+    const val WORK_UPLOAD_PERIODIC = "mikestreet-upload-periodic"
 
     /** POST one frame + its gps.json sidecar. Idempotent server-side (dedupes by sha256). */
     private fun uploadFrame(jpg: File): Boolean {
@@ -121,8 +166,11 @@ object StreetUploader {
                 .build()
             client.newCall(req).execute().use { resp ->
                 val payload = resp.body?.string().orEmpty()
-                // never-trust-200: only count it stored if the lake says so
-                val ok = resp.isSuccessful && payload.contains("\"stored\":true")
+                // never-trust-200: it's safe in the lake if the server says stored OR duplicate. A
+                // frame from a partially-uploaded session returns `duplicate:true` on retry — counting
+                // that as FAILURE (as we used to) meant such a session could NEVER be marked .uploaded
+                // and was stranded forever. duplicate == already stored == success.
+                val ok = resp.isSuccessful && (payload.contains("\"stored\":true") || payload.contains("\"duplicate\":true"))
                 if (!ok) Log.w(TAG, "frame ${jpg.name} -> ${resp.code} ${payload.take(160)}")
                 ok
             }

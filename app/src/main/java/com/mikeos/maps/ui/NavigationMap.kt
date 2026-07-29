@@ -71,6 +71,9 @@ fun NavigationMap(
     onMapTapEmpty: () -> Unit,
     poiResults: List<NearbySearch.Place> = emptyList(),
     onPoiResultTap: (NearbySearch.Place) -> Unit = {},
+    ambientPois: List<NearbySearch.Place> = emptyList(),
+    onViewportChanged: (south: Double, west: Double, north: Double, east: Double, zoom: Double) -> Unit = { _, _, _, _, _ -> },
+    focusPoint: PolylineCodec.LatLon? = null,
     styleUrl: String = "${BuildConfig.BASEMAP_URL}/style.json",
     modifier: Modifier = Modifier,
 ) {
@@ -82,6 +85,7 @@ fun NavigationMap(
     val currentOnPoiTap by rememberUpdatedState(onPoiTap)
     val currentOnMapTapEmpty by rememberUpdatedState(onMapTapEmpty)
     val currentOnPoiResultTap by rememberUpdatedState(onPoiResultTap)
+    val currentOnViewportChanged by rememberUpdatedState(onViewportChanged)
 
     AndroidView(
         modifier = modifier,
@@ -111,6 +115,17 @@ fun NavigationMap(
                         override fun onScale(detector: StandardScaleGestureDetector) {}
                         override fun onScaleEnd(detector: StandardScaleGestureDetector) { logCamera() }
                     })
+                    // Camera settled → report the visible box so the VM can refresh the ambient POI
+                    // overlay (every named OSM business in view). The VM debounces + gates on zoom.
+                    map.addOnCameraIdleListener {
+                        val b = runCatching { map.projection.visibleRegion.latLngBounds }.getOrNull()
+                        if (b != null) {
+                            currentOnViewportChanged(
+                                b.latitudeSouth, b.longitudeWest, b.latitudeNorth, b.longitudeEast,
+                                map.cameraPosition.zoom,
+                            )
+                        }
+                    }
                     // Tap a named feature (a Super U, a bus stop, a place label) → offer directions to
                     // it (Google-Maps style). We query the rendered vector tiles under the finger and
                     // pick the nearest NAMED feature; an empty tap dismisses any open card.
@@ -154,7 +169,7 @@ fun NavigationMap(
                         holder.style = style
                         holder.currentStyleUrl = styleUrl
                         installOverlays(style, accent)
-                        holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults)
+                        holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults, ambientPois, focusPoint)
                     }
                 }
             }
@@ -169,10 +184,10 @@ fun NavigationMap(
                 m.setStyle(Style.Builder().fromUri(styleUrl)) { style ->
                     holder.style = style
                     installOverlays(style, accent)
-                    holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults)
+                    holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults, ambientPois, focusPoint)
                 }
             } else {
-                holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults)
+                holder.render(location, routePoints, follow, navigating, headingUp, bearingDeg, poiResults, ambientPois, focusPoint)
             }
         },
     )
@@ -192,6 +207,43 @@ private fun installOverlays(style: Style, accent: Int) {
             PropertyFactory.lineWidth(6f),
             PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
             PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+        ),
+    )
+    // Trip-planner destination marker (the place you're planning a trip to).
+    style.addSource(GeoJsonSource(SRC_FOCUS))
+    style.addLayer(
+        CircleLayer(LYR_FOCUS, SRC_FOCUS).withProperties(
+            PropertyFactory.circleColor(accent),
+            PropertyFactory.circleRadius(9f),
+            PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+            PropertyFactory.circleStrokeWidth(3f),
+        ),
+    )
+    // Ambient viewport POIs — every named OSM business in view (bakeries, pharmacies, hairdressers…),
+    // drawn UNDER the Explore pins so the map feels full while browsing. Populated by the VM's debounced
+    // Overpass viewport query; tappable via the same name-feature tap path → the place-details card.
+    style.addSource(GeoJsonSource(SRC_AMBIENT))
+    style.addLayer(
+        CircleLayer(LYR_AMBIENT_DOT, SRC_AMBIENT).withProperties(
+            PropertyFactory.circleColor(poiCategoryColor()),
+            PropertyFactory.circleRadius(5f),
+            PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+            PropertyFactory.circleStrokeWidth(1.5f),
+        ),
+    )
+    style.addLayer(
+        SymbolLayer(LYR_AMBIENT_LABEL, SRC_AMBIENT).withProperties(
+            PropertyFactory.textField(Expression.get("name")),
+            PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+            PropertyFactory.textSize(10.5f),
+            PropertyFactory.textColor(android.graphics.Color.WHITE),
+            PropertyFactory.textHaloColor(android.graphics.Color.BLACK),
+            PropertyFactory.textHaloWidth(1.3f),
+            PropertyFactory.textOffset(arrayOf(0f, 0.9f)),
+            PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+            PropertyFactory.textOptional(true),
+            PropertyFactory.textAllowOverlap(false),
+            PropertyFactory.textMaxWidth(7f),
         ),
     )
     // Explore result pins (parking/fuel/food…): a category-coloured dot + name label, tappable.
@@ -274,6 +326,8 @@ private class NavMapHolder {
     var pois: List<NearbySearch.Place> = emptyList()   // current result pins (for tap → Place lookup)
     private var centeredOnce = false
     private var lastFittedRoute: List<PolylineCodec.LatLon>? = null
+    private var lastFocusLat: Double? = null   // last destination we flew to (avoid re-flying every frame)
+    private var lastFocusLon: Double? = null
     // Smoothed speed for the adaptive nav zoom (raw GPS speed is noisy → EMA to avoid zoom jitter).
     private var smoothedKmh = 0.0
     // Last good travel bearing — kept while stopped (bearing is null) so the map doesn't snap north.
@@ -287,8 +341,14 @@ private class NavMapHolder {
         headingUp: Boolean,
         bearingDeg: Double?,
         poiResults: List<NearbySearch.Place>,
+        ambientPois: List<NearbySearch.Place>,
+        focusPoint: PolylineCodec.LatLon?,
     ) {
         val s = style ?: return
+        // Trip-planner destination marker (a pin the map flies to before a route exists).
+        s.getSourceAs<GeoJsonSource>(SRC_FOCUS)?.setGeoJson(
+            if (focusPoint != null) Point.fromLngLat(focusPoint.lon, focusPoint.lat) as Geometry else EMPTY
+        )
         val routeGeom: Geometry =
             if (points.size >= 2) LineString.fromLngLats(points.map { Point.fromLngLat(it.lon, it.lat) })
             else EMPTY
@@ -306,6 +366,18 @@ private class NavMapHolder {
         }
         json.append("]}")
         s.getSourceAs<GeoJsonSource>(SRC_POIS)?.setGeoJson(json.toString())
+
+        // Ambient viewport POIs (the "make it full" overlay) — same raw-GeoJSON shape; name drives both
+        // the label and the tap → details lookup.
+        val aj = StringBuilder("{\"type\":\"FeatureCollection\",\"features\":[")
+        ambientPois.forEachIndexed { i, p ->
+            if (i > 0) aj.append(',')
+            val nm = p.name.replace("\\", "\\\\").replace("\"", "\\\"")
+            aj.append("{\"type\":\"Feature\",\"properties\":{\"cat\":\"${p.category.name}\",\"name\":\"$nm\"},")
+                .append("\"geometry\":{\"type\":\"Point\",\"coordinates\":[${p.lon},${p.lat}]}}")
+        }
+        aj.append("]}")
+        s.getSourceAs<GeoJsonSource>(SRC_AMBIENT)?.setGeoJson(aj.toString())
         // SNAP-TO-ROUTE: GPS is ±5-10 m noisy, so while navigating ride the blue line — put the puck
         // on the nearest point ON the route and take its heading from that segment's forward bearing,
         // UNLESS we're genuinely off-route (then show the raw fix and let the reroute logic react).
@@ -371,6 +443,11 @@ private class NavMapHolder {
             points.forEach { b.include(LatLng(it.lat, it.lon)) }
             runCatching { m.easeCamera(CameraUpdateFactory.newLatLngBounds(b.build(), FIT_PADDING_PX)) }
             lastFittedRoute = points
+        } else if (!follow && points.size < 2 && focusPoint != null &&
+            (focusPoint.lat != lastFocusLat || focusPoint.lon != lastFocusLon)) {
+            // A destination was chosen but there's no route yet — fly to the place (Travel-preview).
+            runCatching { m.easeCamera(CameraUpdateFactory.newLatLngZoom(LatLng(focusPoint.lat, focusPoint.lon), FOCUS_ZOOM)) }
+            lastFocusLat = focusPoint.lat; lastFocusLon = focusPoint.lon
         }
     }
 
@@ -388,11 +465,30 @@ private fun featureName(f: Feature): String? {
     return null
 }
 
+/** Category → dot colour, shared by the Explore pins and the ambient overlay (keys are Category.name). */
+private fun poiCategoryColor(): Expression = Expression.match(
+    Expression.get("cat"),
+    Expression.literal("PARKING"), Expression.rgb(76, 141, 255),
+    Expression.literal("FUEL"), Expression.rgb(255, 152, 0),
+    Expression.literal("CHARGING"), Expression.rgb(61, 220, 132),
+    Expression.literal("FOOD"), Expression.rgb(255, 90, 122),
+    Expression.literal("SHOP"), Expression.rgb(176, 124, 255),
+    Expression.literal("REST"), Expression.rgb(38, 198, 218),
+    Expression.literal("CASH"), Expression.rgb(255, 194, 75),
+    Expression.rgb(154, 165, 177),   // default (OTHER)
+)
+
 private const val SRC_ROUTE = "route-src"
 private const val LYR_ROUTE = "route-line"
 private const val SRC_POIS = "pois-src"
 private const val LYR_POIS_DOT = "pois-dot"
 private const val LYR_POIS_LABEL = "pois-label"
+private const val SRC_AMBIENT = "ambient-src"
+private const val LYR_AMBIENT_DOT = "ambient-dot"
+private const val LYR_AMBIENT_LABEL = "ambient-label"
+private const val SRC_FOCUS = "focus-src"
+private const val LYR_FOCUS = "focus-dot"
+private const val FOCUS_ZOOM = 15.5   // zoom when flying to a chosen trip destination
 private const val SRC_ME = "me-src"
 private const val LYR_ME_RING = "me-ring"
 private const val LYR_ME_DOT = "me-dot"

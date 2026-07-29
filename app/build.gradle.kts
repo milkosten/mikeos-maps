@@ -14,8 +14,8 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 44
-        versionName = "0.21.0-place-details"
+        versionCode = 51
+        versionName = "0.28.0-street-upload-queue"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
         buildConfigField("String", "DAEMON_BASE_URL", "\"https://127.0.0.1:7743\"")
@@ -62,6 +62,9 @@ android {
         // self-hosted planet Overpass excels at, with no public rate limits. Point it at our box.
         buildConfigField("String", "OVERPASS_SELF_URL", "\"https://osm.osmike.com/overpass\"")
         buildConfigField("String", "OSM_TOKEN", "\"d1385c3a8ec5febce95ee2481c41b93b83779a78477ef5d1b2c630c7064adf7e\"")
+        // france-enterprises-api (242 box): open French business POIs (SIRENE) the map overlay merges
+        // with OSM so shops/cafés/companies not in OSM still show. Bearer-gated with OSM_TOKEN.
+        buildConfigField("String", "FR_ENTERPRISES_URL", "\"https://france-enterprises-api.osmike.com\"")
 
         // MikeStreet lake (self-hosted on the 242 box): the app uploads full-res dashboard frames +
         // gps.json here. STREET_INGEST_KEY is WRITE-ONLY (POST /api/frames only — never admin), so it's
