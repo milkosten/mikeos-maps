@@ -27,6 +27,19 @@ object FrEnterprises {
         .build()
 
     /** Businesses inside the viewport [south,west,north,east]. Best-effort: empty list on any failure. */
+    /** Fire-and-forget: ask the backend to crawl + cache a few businesses' websites in this viewport
+     *  (chrome-pool), building the enrichment DB where the user actually browses. Best-effort; the
+     *  response is ignored (the backend rate-limits: 5/call + 24 h freshness). */
+    suspend fun triggerEnrich(south: Double, west: Double, north: Double, east: Double) = withContext(Dispatchers.IO) {
+        val url = "$ENDPOINT/enrich?bbox=$west,$south,$east,$north&limit=1"
+        val req = Request.Builder()
+            .url(url)
+            .apply { if (BuildConfig.OSM_TOKEN.isNotBlank()) header("Authorization", "Bearer ${BuildConfig.OSM_TOKEN}") }
+            .build()
+        runCatching { client.newCall(req).execute().use { } }
+        Unit
+    }
+
     suspend fun searchInBounds(
         south: Double,
         west: Double,

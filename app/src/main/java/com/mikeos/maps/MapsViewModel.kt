@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 // Overpass. z15.5 ≈ close street level (POIs are relevant); below that the map is too broad.
 private const val AMBIENT_MIN_ZOOM = 15.5
 private const val AMBIENT_DEBOUNCE_MS = 350L
+private const val ENRICH_THROTTLE_MS = 5_000L   // min gap between website-enrichment triggers while browsing
 private const val PREFS = "maps_prefs"
 
 /** A type-ahead destination suggestion — from trip history (coords null → re-geocoded) or Nominatim. */
@@ -129,6 +130,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     val ambientPois: StateFlow<List<NearbySearch.Place>> = _ambientPois.asStateFlow()
     private var ambientJob: Job? = null
     private var ambientLastKey: String? = null
+    @Volatile private var lastEnrichAt = 0L   // throttle the fire-and-forget website-enrichment trigger
 
     private var locationJob: Job? = null
     private var suggestJob: Job? = null
@@ -483,6 +485,14 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         val key = "%.3f,%.3f,%.3f,%.3f".format(south, west, north, east)
         if (key == ambientLastKey) return
         ambientLastKey = key
+        // Fire-and-forget: ask the backend to crawl a few businesses' websites in this area (chrome-pool),
+        // building the enrichment DB where the user browses. Throttled here; the backend is 24h-fresh +
+        // 5/call. Independent of ambientJob so panning away doesn't cancel it. Skip a too-large box.
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastEnrichAt > ENRICH_THROTTLE_MS && (east - west) * (north - south) < 0.08) {
+            lastEnrichAt = nowMs
+            viewModelScope.launch { runCatching { FrEnterprises.triggerEnrich(south, west, north, east) } }
+        }
         ambientJob?.cancel()
         ambientJob = viewModelScope.launch {
             delay(AMBIENT_DEBOUNCE_MS)
