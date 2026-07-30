@@ -232,6 +232,7 @@ private fun installOverlays(style: Style, accent: Int) {
         SymbolLayer(LYR_AMBIENT_LABEL, SRC_AMBIENT).withProperties(
             PropertyFactory.iconImage(Expression.get("icon")),
             PropertyFactory.iconSize(AMBIENT_ICON_SIZE),
+            PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),   // chip ABOVE the point…
             PropertyFactory.iconAllowOverlap(false),
             PropertyFactory.iconOptional(false),
             PropertyFactory.iconPadding(2f),
@@ -240,7 +241,7 @@ private fun installOverlays(style: Style, accent: Int) {
             PropertyFactory.textSize(AMBIENT_LABEL_SIZE),
             PropertyFactory.textColor(poiTextColor()),
             PropertyFactory.textHaloWidth(0f),   // ONE solid colour — no outline
-            PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
+            PropertyFactory.textOffset(arrayOf(0f, 0.6f)),   // …name BELOW it — no overlap
             PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
             PropertyFactory.textOptional(true),
             PropertyFactory.textAllowOverlap(false),

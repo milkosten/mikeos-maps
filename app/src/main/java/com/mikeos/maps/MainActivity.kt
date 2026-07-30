@@ -810,18 +810,10 @@ private fun TappedPlaceCard(
                 }
             }
 
-            // Opening hours → "Open · closes 20:00" (green) / "Closed" (red) + the raw hours.
+            // Opening hours → a coloured live-status pill + today's hours + an expandable full week.
             details?.openingHours?.let { oh ->
-                val st = com.mikeos.maps.nav.OpeningHours.status(oh)
-                Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (st.label.isNotBlank()) {
-                        Text(st.label, color = if (st.open == true) MikeGreen else if (st.open == false) MikeRed else MikeMuted,
-                            fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text("  ·  ", color = MikeMuted, fontSize = 13.sp)
-                    }
-                    Text(oh, color = MikeMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+                Spacer(Modifier.height(12.dp))
+                OpeningHoursBlock(oh)
             }
             // Phone (tap to call) + Website (tap to open).
             details?.phone?.let { ph ->
@@ -862,6 +854,87 @@ private fun TappedPlaceCard(
                     Icon(Icons.Filled.PlayArrow, contentDescription = null)
                     Spacer(Modifier.size(6.dp))
                     Text("Directions", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The opening-hours block in a place card: a coloured live-status pill ("Open · closes 20:00",
+ * "Closed for lunch · opens 14:00", "Closed · opens tomorrow 08:30" — evaluated in CET), then today's
+ * hours, expandable to the full week with today highlighted. Falls back to the raw string if unparsed.
+ */
+@Composable
+private fun OpeningHoursBlock(oh: String) {
+    val week = remember(oh) { com.mikeos.maps.nav.OpeningHours.parse(oh) }
+    if (week == null) {   // exotic syntax we don't parse → just show the raw hours
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("🕑", fontSize = 14.sp); Spacer(Modifier.width(8.dp))
+            Text(oh, color = MikeMuted, fontSize = 13.sp)
+        }
+        return
+    }
+    val st = remember(oh) { com.mikeos.maps.nav.OpeningHours.status(week) }
+    val todayIdx = remember(oh) { com.mikeos.maps.nav.OpeningHours.todayIndex() }
+    var expanded by remember(oh) { mutableStateOf(false) }
+    val amber = Color(0xFFD9820C)
+    val pill = when (st.state) {
+        com.mikeos.maps.nav.OpeningHours.State.OPEN -> MikeGreen
+        com.mikeos.maps.nav.OpeningHours.State.CLOSESOON,
+        com.mikeos.maps.nav.OpeningHours.State.OPENSOON,
+        com.mikeos.maps.nav.OpeningHours.State.LUNCH -> amber
+        com.mikeos.maps.nav.OpeningHours.State.CLOSED -> MikeRed
+        com.mikeos.maps.nav.OpeningHours.State.UNKNOWN -> MikeMuted
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        // Status pill.
+        if (st.label.isNotBlank()) {
+            Row(
+                Modifier.clip(RoundedCornerShape(999.dp)).background(pill.copy(alpha = 0.15f))
+                    .padding(horizontal = 11.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.size(8.dp).clip(CircleShape).background(pill))
+                Spacer(Modifier.width(7.dp))
+                Text(st.label, color = pill, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        // Today row — tap to expand the week.
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { expanded = !expanded }
+                .padding(vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(com.mikeos.maps.nav.OpeningHours.DAY_FULL[todayIdx], color = MikeOnSurface,
+                fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(10.dp))
+            Text(com.mikeos.maps.nav.OpeningHours.dayLabel(week, todayIdx), color = MikeMuted,
+                fontSize = 13.5.sp, modifier = Modifier.weight(1f))
+            Icon(
+                if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Hide week" else "See full week", tint = MikeMuted,
+            )
+        }
+        // Full week, today highlighted.
+        if (expanded) {
+            Column(Modifier.fillMaxWidth().padding(top = 2.dp)) {
+                for (i in 0..6) {
+                    val today = i == todayIdx
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(com.mikeos.maps.nav.OpeningHours.DAY_LABEL[i],
+                            color = if (today) MikeOnSurface else MikeMuted,
+                            fontSize = 13.sp, fontWeight = if (today) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier.width(44.dp))
+                        Text(com.mikeos.maps.nav.OpeningHours.dayLabel(week, i),
+                            color = if (today) MikeOnSurface else MikeMuted,
+                            fontSize = 13.sp, fontWeight = if (today) FontWeight.SemiBold else FontWeight.Normal,
+                            textAlign = TextAlign.End, modifier = Modifier.weight(1f))
+                    }
                 }
             }
         }
