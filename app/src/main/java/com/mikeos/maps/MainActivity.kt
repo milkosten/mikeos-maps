@@ -813,7 +813,7 @@ private fun TappedPlaceCard(
             // Opening hours → a coloured live-status pill + today's hours + an expandable full week.
             details?.openingHours?.let { oh ->
                 Spacer(Modifier.height(12.dp))
-                OpeningHoursBlock(oh)
+                OpeningHoursBlock(oh, fromWeb = details.hoursFromWeb)
             }
             // Phone (tap to call) + Website (tap to open).
             details?.phone?.let { ph ->
@@ -866,7 +866,7 @@ private fun TappedPlaceCard(
  * hours, expandable to the full week with today highlighted. Falls back to the raw string if unparsed.
  */
 @Composable
-private fun OpeningHoursBlock(oh: String) {
+private fun OpeningHoursBlock(oh: String, fromWeb: Boolean = false) {
     val week = remember(oh) { com.mikeos.maps.nav.OpeningHours.parse(oh) }
     if (week == null) {   // exotic syntax we don't parse → just show the raw hours
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -889,16 +889,22 @@ private fun OpeningHoursBlock(oh: String) {
     }
 
     Column(Modifier.fillMaxWidth()) {
-        // Status pill.
+        // Status pill (+ a subtle "from their website" note when the hours came from the crawl).
         if (st.label.isNotBlank()) {
-            Row(
-                Modifier.clip(RoundedCornerShape(999.dp)).background(pill.copy(alpha = 0.15f))
-                    .padding(horizontal = 11.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(pill))
-                Spacer(Modifier.width(7.dp))
-                Text(st.label, color = pill, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.clip(RoundedCornerShape(999.dp)).background(pill.copy(alpha = 0.15f))
+                        .padding(horizontal = 11.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(pill))
+                    Spacer(Modifier.width(7.dp))
+                    Text(st.label, color = pill, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+                if (fromWeb) {
+                    Spacer(Modifier.width(8.dp))
+                    Text("from their website", color = MikeMuted, fontSize = 11.sp)
+                }
             }
         }
         // Today row — tap to expand the week.

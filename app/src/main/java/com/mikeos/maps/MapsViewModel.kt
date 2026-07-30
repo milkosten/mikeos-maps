@@ -466,7 +466,36 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val d = runCatching { com.mikeos.maps.net.PoiDetails.at(name, lat, lon) }.getOrNull()
             val cur = _state.value.tappedPlace
-            if (cur?.lat == lat && cur.lon == lon) _state.value = _state.value.copy(tappedDetails = d)
+            if (cur?.lat != lat || cur.lon != lon) return@launch
+            _state.value = _state.value.copy(tappedDetails = d)
+            // No OSM hours → deep lookup: find + crawl the store's website (rate-limited server-side),
+            // then merge any crawled hours/phone/website into the card, tagged "from their website".
+            if (d?.openingHours == null) deepLookupTapped(name, lat, lon, d, tries = 0)
+        }
+    }
+
+    private suspend fun deepLookupTapped(
+        name: String, lat: Double, lon: Double,
+        base: com.mikeos.maps.net.PoiDetails?, tries: Int,
+    ) {
+        val r = runCatching { com.mikeos.maps.net.FrEnterprises.lookup(name, lat, lon) }.getOrNull() ?: return
+        val cur = _state.value.tappedPlace
+        if (cur?.lat != lat || cur.lon != lon) return   // user moved on
+        when (r.status) {
+            "ready" -> {
+                val merged = (base ?: com.mikeos.maps.net.PoiDetails()).copy(
+                    openingHours = base?.openingHours ?: r.openingHours,
+                    phone = base?.phone ?: r.phone,
+                    website = base?.website ?: r.website,
+                    hoursFromWeb = base?.openingHours == null && r.openingHours != null,
+                )
+                _state.value = _state.value.copy(tappedDetails = merged)
+            }
+            "crawling", "queued" -> if (tries < 1) {
+                kotlinx.coroutines.delay(9000)
+                val still = _state.value.tappedPlace
+                if (still?.lat == lat && still.lon == lon) deepLookupTapped(name, lat, lon, base, tries + 1)
+            }
         }
     }
 

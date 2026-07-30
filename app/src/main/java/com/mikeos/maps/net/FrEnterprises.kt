@@ -40,6 +40,42 @@ object FrEnterprises {
         Unit
     }
 
+    /** Crawled web data for a store, from the deep-lookup pipeline. Any field may be null/blank. */
+    data class Lookup(
+        val status: String,          // ready | crawling | queued
+        val openingHours: String? = null,
+        val phone: String? = null,
+        val website: String? = null,
+    )
+
+    /**
+     * Deep lookup for a tapped store that OSM has no hours for: asks the backend to find its website
+     * (MikeSearch, rate-limited) and crawl it, returning any cached hours/phone/website. Best-effort;
+     * null on failure. The backend builds this up over time, so a first tap may return `crawling`.
+     */
+    suspend fun lookup(name: String, lat: Double, lon: Double): Lookup? = withContext(Dispatchers.IO) {
+        val url = "$ENDPOINT/lookup?name=${java.net.URLEncoder.encode(name, "UTF-8")}&lat=$lat&lon=$lon"
+        val req = Request.Builder()
+            .url(url)
+            .apply { if (BuildConfig.OSM_TOKEN.isNotBlank()) header("Authorization", "Bearer ${BuildConfig.OSM_TOKEN}") }
+            .build()
+        try {
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val o = JSONObject(resp.body?.string().orEmpty())
+                if (!o.optBoolean("ok")) return@withContext null
+                Lookup(
+                    status = o.optString("status"),
+                    openingHours = o.optString("opening_hours").takeUnless { it.isBlank() || it == "null" },
+                    phone = o.optString("phone").takeUnless { it.isBlank() || it == "null" },
+                    website = o.optString("website").takeUnless { it.isBlank() || it == "null" },
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "lookup failed: ${e.message}"); null
+        }
+    }
+
     suspend fun searchInBounds(
         south: Double,
         west: Double,

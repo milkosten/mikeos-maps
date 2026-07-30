@@ -83,7 +83,8 @@ object OpeningHours {
             if (tok.isEmpty()) continue
             if (tok.contains("-")) {
                 val ab = tok.split("-")
-                val a: Int? = ab.getOrNull(0)?.trim()?.takeLast(2)?.let { DOW[it] }
+                // First two letters → matches Mo / Mon / Monday alike (OSM uses Mo; crawled data uses Mon).
+                val a: Int? = ab.getOrNull(0)?.trim()?.take(2)?.let { DOW[it] }
                 val b: Int? = ab.getOrNull(1)?.trim()?.take(2)?.let { DOW[it] }
                 if (a != null && b != null) {
                     var i: Int = a
@@ -91,7 +92,7 @@ object OpeningHours {
                     while (true) { out.add(i); if (i == b) break; i = (i + 1) % 7; if (++guard > 8) break }
                 }
             } else {
-                DOW[tok.takeLast(2)]?.let { out.add(it) }
+                DOW[tok.take(2)]?.let { out.add(it) }
             }
         }
         return out.distinct()

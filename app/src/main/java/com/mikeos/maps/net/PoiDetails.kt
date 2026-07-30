@@ -22,6 +22,7 @@ data class PoiDetails(
     val openingHours: String? = null,  // raw OSM opening_hours string
     val phone: String? = null,
     val website: String? = null,
+    val hoursFromWeb: Boolean = false, // hours came from the crawled website (not OSM) → show a note
 ) {
     companion object {
         private const val TAG = "PoiDetails"
