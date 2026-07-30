@@ -3,6 +3,7 @@ package com.mikeos.maps.net
 import android.util.Log
 import com.mikeos.maps.BuildConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -126,42 +127,43 @@ class TripsCloudClient(
             .put("from", JSONObject().put("lat", fromLat).put("lon", fromLon))
             .put("to", JSONObject().put("lat", toLat).put("lon", toLon))
             .toString().toRequestBody(jsonMedia)
-        try {
-            client.newCall(unkeyed("/api/route").post(payload).build()).execute().use { resp ->
-                val raw = resp.body?.string().orEmpty()
-                if (!resp.isSuccessful) {
-                    Log.w(TAG, "route HTTP ${resp.code}: $raw")
-                    return@withContext null
-                }
-                val o = runCatching { JSONObject(raw) }.getOrNull() ?: return@withContext null
-                val poly = o.optString("polyline").takeUnless { it.isBlank() }
-                if (!o.optBoolean("ok", true) || poly == null) {
-                    Log.w(TAG, "route 200 but no polyline: $raw")
-                    return@withContext null
-                }
-                val stepsArr = o.optJSONArray("steps")
-                val steps = if (stepsArr != null) {
-                    (0 until stepsArr.length()).mapNotNull { i ->
-                        val s = stepsArr.optJSONObject(i) ?: return@mapNotNull null
-                        val lat = s.optDouble("lat", Double.NaN)
-                        val lon = s.optDouble("lon", Double.NaN)
-                        if (lat.isNaN() || lon.isNaN()) return@mapNotNull null
-                        RouteStep(
-                            type = s.optString("type"),
-                            modifier = s.optString("modifier").takeUnless { it.isBlank() || it == "null" },
-                            name = s.optString("name"),
-                            distanceM = s.optDouble("distance_m", 0.0),
-                            durationS = s.optDouble("duration_s", 0.0),
-                            lat = lat, lon = lon,
-                        )
+        // Retry a few times: a SINGLE dropped call — flaky-ROM DNS, cellular in a moving car, or a
+        // trips-cloud (Railway) cold-start — must not surface as "couldn't compute a route" and block
+        // starting a trip. The route is keyless + cheap, so a couple of quick retries are safe.
+        repeat(ROUTE_ATTEMPTS) { attempt ->
+            val result: Route? = runCatching {
+                client.newCall(unkeyed("/api/route").post(payload).build()).execute().use { resp ->
+                    val raw = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) { Log.w(TAG, "route HTTP ${resp.code}: $raw"); return@use null }
+                    val o = runCatching { JSONObject(raw) }.getOrNull() ?: return@use null
+                    val poly = o.optString("polyline").takeUnless { it.isBlank() }
+                    if (!o.optBoolean("ok", true) || poly == null) {
+                        Log.w(TAG, "route 200 but no polyline: $raw"); return@use null
                     }
-                } else emptyList()
-                Route(poly, o.optDouble("km", 0.0), o.optDouble("eta_min", 0.0), steps)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "route failed: ${e.message}")
-            null
+                    val stepsArr = o.optJSONArray("steps")
+                    val steps = if (stepsArr != null) {
+                        (0 until stepsArr.length()).mapNotNull { i ->
+                            val s = stepsArr.optJSONObject(i) ?: return@mapNotNull null
+                            val lat = s.optDouble("lat", Double.NaN)
+                            val lon = s.optDouble("lon", Double.NaN)
+                            if (lat.isNaN() || lon.isNaN()) return@mapNotNull null
+                            RouteStep(
+                                type = s.optString("type"),
+                                modifier = s.optString("modifier").takeUnless { it.isBlank() || it == "null" },
+                                name = s.optString("name"),
+                                distanceM = s.optDouble("distance_m", 0.0),
+                                durationS = s.optDouble("duration_s", 0.0),
+                                lat = lat, lon = lon,
+                            )
+                        }
+                    } else emptyList()
+                    Route(poly, o.optDouble("km", 0.0), o.optDouble("eta_min", 0.0), steps)
+                }
+            }.getOrElse { Log.w(TAG, "route failed (attempt ${attempt + 1}): ${it.message}"); null }
+            if (result != null) return@withContext result
+            if (attempt < ROUTE_ATTEMPTS - 1) delay(ROUTE_RETRY_MS * (attempt + 1))   // 350ms, then 700ms
         }
+        null
     }
 
     // ---- TRIP LIFECYCLE (keyed) ------------------------------------------------------------
@@ -472,5 +474,7 @@ class TripsCloudClient(
 
     companion object {
         private const val TAG = "TripsCloudClient"
+        private const val ROUTE_ATTEMPTS = 3        // survive a transient dropped /api/route call
+        private const val ROUTE_RETRY_MS = 350L     // backoff base (×attempt): 350ms, then 700ms
     }
 }

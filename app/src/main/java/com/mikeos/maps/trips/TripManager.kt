@@ -120,16 +120,20 @@ class TripManager private constructor(private val appContext: Context) {
         destName: String,
         destLat: Double, destLon: Double,
         originLat: Double, originLon: Double,
-        route: TripsCloudClient.Route,
+        route: TripsCloudClient.Route?,   // may be null: "Start anyway" before the route/GPS is ready
     ): String? = lock.withLock {
         val key = apiKey() ?: run { Log.w(TAG, "startTrip: no api key yet"); return null }
+        // A trip only needs a destination — the route can be empty and fill in on the first beat.
+        val poly = route?.polyline ?: ""
+        val km = route?.km ?: 0.0
+        val etaMin = route?.etaMin ?: 0.0
         val tripId = cloud.createTrip(
             apiKey = key,
             destName = destName,
             destLat = destLat, destLon = destLon,
             originLat = originLat, originLon = originLon,
-            polyline = route.polyline,
-            km = route.km, etaMin = route.etaMin,
+            polyline = poly,
+            km = km, etaMin = etaMin,
             deviceId = deviceId(),
         ) ?: run { Log.w(TAG, "startTrip: createTrip returned no trip_id (silent-drop guard tripped)"); return null }
 
@@ -139,12 +143,12 @@ class TripManager private constructor(private val appContext: Context) {
             tripId = tripId,
             destName = destName,
             destLat = destLat, destLon = destLon,
-            km = route.km, etaMin = route.etaMin,
-            polyline = route.polyline,
+            km = km, etaMin = etaMin,
+            polyline = poly,
             startedAtMs = System.currentTimeMillis(),
             lastLat = originLat, lastLon = originLon,
         )
-        Log.i(TAG, "trip started: $tripId -> $destName (${route.km} km, ${route.etaMin} min)")
+        Log.i(TAG, "trip started: $tripId -> $destName ($km km, $etaMin min${if (route == null) ", route pending" else ""})")
 
         // Kick off the 5s cloud sampler (samples immediately, then every 5s until the trip ends).
         startSampler()
@@ -159,9 +163,9 @@ class TripManager private constructor(private val appContext: Context) {
                 .put("dest_lon", destLon)
                 .put("origin_lat", originLat)
                 .put("origin_lon", originLon)
-                .put("eta_min", route.etaMin)
-                .put("km", route.km)
-                .put("polyline", route.polyline)
+                .put("eta_min", etaMin)
+                .put("km", km)
+                .put("polyline", poly)
                 .put("mode", "driving")
                 .toString(),
         )

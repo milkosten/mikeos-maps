@@ -260,9 +260,17 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     private fun recomputeNav(fix: DaemonLocation.Fix) {
         val a = active.value
         val pts = _state.value.routePoints
-        if (a == null || pts.size < 2) {
+        if (a == null) {
             _navInfo.value = null
             _guidance.value = null
+            return
+        }
+        if (pts.size < 2) {
+            // Trip started without a route yet ("Start anyway" / GPS wasn't ready). Now that we have a
+            // fix, fetch the route from here — guidance + HUD light up on the next beat once it lands.
+            _navInfo.value = null
+            _guidance.value = null
+            reroute(fix.lat, fix.lon, a)
             return
         }
         // --- ETA -------------------------------------------------------------------------------
@@ -332,6 +340,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     private fun reroute(curLat: Double, curLon: Double, a: TripManager.ActiveTrip) {
         if (rerouting) return
         rerouting = true
+        val hadRoute = _state.value.routePoints.size >= 2   // distinguish "rerouting" from the first fetch
         viewModelScope.launch {
             val r = trips.route(curLat, curLon, a.destLat, a.destLon)
             if (r != null) {
@@ -343,7 +352,7 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
                     routeSteps = r.steps,
                     routeKm = r.km,
                     routeEtaMin = r.etaMin,
-                    notice = "Rerouting…",
+                    notice = if (hadRoute) "Rerouting…" else null,
                 )
             }
             rerouting = false
@@ -643,27 +652,32 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
     /** Compute (or recompute) the planner route origin→dest and update the metrics + framed line. */
     private fun recomputePlanRoute() {
         val dest = _state.value.planDest ?: return
+        // We ALWAYS have the destination → the trip is always startable. A missing GPS fix or a failed
+        // route never blocks Start; they just mean "Start anyway" and the route fills in as you drive.
+        pendingPlace = Geocoder.Place(dest.name, dest.lat, dest.lon)
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true, notice = "Routing…")
             val origin = _state.value.planOrigin
-            val oLat: Double; val oLon: Double
             var fix: DaemonLocation.Fix? = null
+            val oLat: Double?; val oLon: Double?
             if (origin != null) { oLat = origin.lat; oLon = origin.lon } else {
                 fix = trips.currentFix()
-                if (fix == null) { _state.value = _state.value.copy(busy = false, notice = "No location fix from the daemon."); return@launch }
-                oLat = fix.lat; oLon = fix.lon
+                oLat = fix?.lat; oLon = fix?.lon
             }
-            val route = trips.route(oLat, oLon, dest.lat, dest.lon)
-            if (route == null) { _state.value = _state.value.copy(busy = false, notice = "Couldn't compute a route to \"${dest.name}\"."); return@launch }
-            val points = runCatching { PolylineCodec.decode(route.polyline) }.getOrDefault(emptyList())
-            // Pending state so START works — but only when origin = My position (pendingFix != null).
-            pendingPlace = Geocoder.Place(dest.name, dest.lat, dest.lon)
             pendingFix = fix
+            val route = if (oLat != null && oLon != null) trips.route(oLat, oLon, dest.lat, dest.lon) else null
             pendingRoute = route
             resetGuidanceTrackers()
+            val points = route?.let { runCatching { PolylineCodec.decode(it.polyline) }.getOrDefault(emptyList()) } ?: emptyList()
             _state.value = _state.value.copy(
-                busy = false, notice = null,
-                routePoints = points, routeSteps = route.steps, routeKm = route.km, routeEtaMin = route.etaMin, destName = dest.name,
+                busy = false,
+                notice = when {
+                    route != null -> null
+                    oLat == null -> "Waiting for GPS — you can start anyway."
+                    else -> "Couldn't load the route yet — start anyway, it'll load as you drive."
+                },
+                routePoints = points, routeSteps = route?.steps ?: emptyList(),
+                routeKm = route?.km, routeEtaMin = route?.etaMin, destName = dest.name,
             )
         }
     }
@@ -746,20 +760,12 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun enterPreview(nameRaw: String, lat: Double, lon: Double) {
         val name = PlacesRepo.cleanLabel(nameRaw)   // drop any region/country tail before it's shown/stored
+        pendingPlace = Geocoder.Place(name, lat, lon)   // always have the destination → always startable
         _state.value = _state.value.copy(notice = "Reading your location…")
         val fix = trips.currentFix()
-        if (fix == null) {
-            _state.value = _state.value.copy(busy = false, notice = "No location fix from the daemon (GPS provider may be down).")
-            return
-        }
         _state.value = _state.value.copy(notice = "Routing…")
-        val route = trips.route(fix.lat, fix.lon, lat, lon)
-        if (route == null) {
-            _state.value = _state.value.copy(busy = false, notice = "Couldn't compute a route to \"$name\".")
-            return
-        }
-        val points = runCatching { PolylineCodec.decode(route.polyline) }.getOrDefault(emptyList())
-        pendingPlace = Geocoder.Place(name, lat, lon)
+        val route = if (fix != null) trips.route(fix.lat, fix.lon, lat, lon) else null
+        val points = route?.let { runCatching { PolylineCodec.decode(it.polyline) }.getOrDefault(emptyList()) } ?: emptyList()
         pendingFix = fix
         pendingRoute = route
         resetGuidanceTrackers()
@@ -767,13 +773,17 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
         val near = _location.value
         _state.value = _state.value.copy(
             busy = false,
-            notice = null,
+            notice = when {
+                route != null -> null
+                fix == null -> "Waiting for GPS — you can start anyway."
+                else -> "Couldn't load the route yet — start anyway, it'll load as you drive."
+            },
             query = "",
             suggestions = emptyList(),
             routePoints = points,
-            routeSteps = route.steps,
-            routeKm = route.km,
-            routeEtaMin = route.etaMin,
+            routeSteps = route?.steps ?: emptyList(),
+            routeKm = route?.km,
+            routeEtaMin = route?.etaMin,
             destName = name,
             previewing = true,
             nearby = emptyList(), nearbyOpen = false,   // clear stale Explore pins on a new route
@@ -799,21 +809,27 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** START the previewed trip (create in cloud + broadcast trip.started + start the 5s sampler). */
     fun startPreviewed() {
-        val place = pendingPlace
-        val fix = pendingFix
-        val route = pendingRoute
-        if (place == null || fix == null || route == null) {
-            _state.value = _state.value.copy(notice = "Nothing to start — preview a destination first.")
-            return
+        val place = pendingPlace ?: run {
+            _state.value = _state.value.copy(notice = "Nothing to start — pick a destination first."); return
         }
+        val route = pendingRoute   // may be null → the beat fetches the route once GPS is flowing
         resetGuidanceTrackers()
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true, notice = "Starting trip…", previewing = false)
-            val id = trips.startTrip(place.name, place.lat, place.lon, fix.lat, fix.lon, route)
+            // Best-available origin, in order: the previewed fix → a fresh fix → last-known → the dest
+            // itself. We start regardless; guidance corrects the moment real coordinates arrive.
+            val fix = pendingFix ?: trips.currentFix()
+            val oLat = fix?.lat ?: lastKnownLat ?: place.lat
+            val oLon = fix?.lon ?: lastKnownLon ?: place.lon
+            val id = trips.startTrip(place.name, place.lat, place.lon, oLat, oLon, route)
             pendingPlace = null; pendingFix = null; pendingRoute = null
             _state.value = _state.value.copy(
                 busy = false,
-                notice = if (id != null) null else "Trip created but the cloud didn't confirm it.",
+                notice = when {
+                    id == null -> "Couldn't reach trips-cloud to start — try again in a moment."
+                    route == null -> "Trip started — the route will appear as you drive."
+                    else -> null
+                },
                 // Trip is live → clear the planner so it doesn't re-appear when the trip ends.
                 planScreen = PlanScreen.NONE, planDest = null, planOrigin = null,
             )

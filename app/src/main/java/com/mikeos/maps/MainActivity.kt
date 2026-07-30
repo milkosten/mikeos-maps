@@ -469,6 +469,7 @@ private fun MapFirstScreen(vm: MapsViewModel, onStreetToggle: (Boolean) -> Unit 
                 onQueryChange = vm::onQueryChange,
                 onPick = { vm.pickPlanResult(it) },
                 onBack = { vm.backFromSearch() },
+                onToggleFavorite = { label, lat, lon -> vm.toggleFavorite(label, lat, lon) },
                 nearLat = location?.lat, nearLon = location?.lon,
             )
         }
@@ -990,6 +991,7 @@ private fun DestinationSearchScreen(
     onQueryChange: (String) -> Unit,
     onPick: (Suggestion) -> Unit,
     onBack: () -> Unit,
+    onToggleFavorite: (label: String, lat: Double?, lon: Double?) -> Unit,
     nearLat: Double?,
     nearLon: Double?,
 ) {
@@ -1023,8 +1025,10 @@ private fun DestinationSearchScreen(
         LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
             items(state.suggestions) { s ->
                 SuggestionRow(
-                    s = s, saved = false, nearLat = nearLat, nearLon = nearLon,
-                    onClick = { onPick(s) }, onToggleSave = {},
+                    s = s, saved = state.favorites.any { it.label == s.label },
+                    nearLat = nearLat, nearLon = nearLon,
+                    onClick = { onPick(s) },
+                    onToggleSave = { onToggleFavorite(s.label, s.lat, s.lon) },
                 )
             }
             if (state.suggestions.isEmpty()) {
@@ -1107,11 +1111,13 @@ private fun TripPlannerPanel(
             }
             Spacer(Modifier.height(14.dp))
             if (origin == null) {
+                // A destination is enough to start — a missing route just means "Start anyway" (it loads
+                // as you drive). Only disabled during the brief route lookup.
                 Button(
-                    onClick = onStart, enabled = !busy && state.routeKm != null, modifier = Modifier.fillMaxWidth(),
+                    onClick = onStart, enabled = !busy && state.planDest != null, modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MikeAccent, contentColor = MikeBg),
-                ) { Text("Start", fontWeight = FontWeight.Bold) }
+                ) { Text(if (state.routeKm != null) "Start" else "Start anyway", fontWeight = FontWeight.Bold) }
             } else {
                 Text("Preview from another location — that's how long it takes from there. Set From to “My position” to start navigating.",
                     color = MikeMuted, fontSize = 12.sp)
