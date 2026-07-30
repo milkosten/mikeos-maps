@@ -821,15 +821,12 @@ class MapsViewModel(app: Application) : AndroidViewModel(app) {
             val fix = pendingFix ?: trips.currentFix()
             val oLat = fix?.lat ?: lastKnownLat ?: place.lat
             val oLon = fix?.lon ?: lastKnownLon ?: place.lon
-            val id = trips.startTrip(place.name, place.lat, place.lon, oLat, oLon, route)
+            // Always starts (locally): a cloud trip_id + the route reconcile in the background.
+            trips.startTrip(place.name, place.lat, place.lon, oLat, oLon, route)
             pendingPlace = null; pendingFix = null; pendingRoute = null
             _state.value = _state.value.copy(
                 busy = false,
-                notice = when {
-                    id == null -> "Couldn't reach trips-cloud to start — try again in a moment."
-                    route == null -> "Trip started — the route will appear as you drive."
-                    else -> null
-                },
+                notice = if (route == null) "Trip started — the route will appear as you drive." else null,
                 // Trip is live → clear the planner so it doesn't re-appear when the trip ends.
                 planScreen = PlanScreen.NONE, planDest = null, planOrigin = null,
             )

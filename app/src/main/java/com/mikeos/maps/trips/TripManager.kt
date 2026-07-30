@@ -48,7 +48,8 @@ class TripManager private constructor(private val appContext: Context) {
 
     /** Public, observable state of the active trip (null = no active trip). */
     data class ActiveTrip(
-        val tripId: String,
+        val tripId: String,            // STABLE LOCAL id ("local-…") — used for the hive + street frames, works offline
+        val cloudTripId: String? = null,  // trips-cloud id, filled once the trip is reconciled online (null = offline/pending)
         val destName: String,
         val destLat: Double,
         val destLon: Double,
@@ -79,6 +80,21 @@ class TripManager private constructor(private val appContext: Context) {
     // Replaces the old once-per-60s-beat sampling. Runs on its own scope for the trip's lifetime.
     private val samplerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var samplerJob: Job? = null
+
+    // OFFLINE-FIRST: a trip starts LOCALLY with no cloud id (no internet / not yet registered). Samples
+    // buffer here; a background reconciler creates the cloud trip and flushes the buffer once online.
+    private val bufferLock = Any()
+    private val sampleBuffer = ArrayDeque<TripsCloudClient.Sample>()
+    @Volatile private var pendingCreate: CreateArgs? = null   // args to create the cloud trip (until reconciled)
+    @Volatile private var pendingEnd: Double? = null          // avg_kmh to post on end, if the trip ended before reconciling
+    @Volatile private var reconcilerJob: Job? = null
+
+    /** Everything trips-cloud needs to create the trip record later, once we're online. */
+    private data class CreateArgs(
+        val destName: String, val destLat: Double, val destLon: Double,
+        val originLat: Double, val originLon: Double,
+        val polyline: String, val km: Double, val etaMin: Double,
+    )
 
     // trip.progress throttle — broadcast at most ~once/60s.
     @Volatile private var lastProgressBroadcastMs = 0L
@@ -113,34 +129,32 @@ class TripManager private constructor(private val appContext: Context) {
     // ---- START -----------------------------------------------------------------------------
 
     /**
-     * Create a trip in trips-cloud from an already-computed route + origin, keep the trip_id,
-     * and broadcast `trip.started`. Returns the trip_id (never-trust-200: verified) or null.
+     * Start a trip. OFFLINE-FIRST: the trip begins IMMEDIATELY with a stable local id — no internet, no
+     * cloud trip_id, and no self-registration are required (a person about to drive out of a dead zone
+     * must be able to start, and offline maps make a cloud id impossible to require anyway). The cloud
+     * record is created + samples flushed in the background by [startReconciler] the moment we're online.
+     * Always returns the local id (never null).
      */
     suspend fun startTrip(
         destName: String,
         destLat: Double, destLon: Double,
         originLat: Double, originLon: Double,
         route: TripsCloudClient.Route?,   // may be null: "Start anyway" before the route/GPS is ready
-    ): String? = lock.withLock {
-        val key = apiKey() ?: run { Log.w(TAG, "startTrip: no api key yet"); return null }
+    ): String = lock.withLock {
         // A trip only needs a destination — the route can be empty and fill in on the first beat.
         val poly = route?.polyline ?: ""
         val km = route?.km ?: 0.0
         val etaMin = route?.etaMin ?: 0.0
-        val tripId = cloud.createTrip(
-            apiKey = key,
-            destName = destName,
-            destLat = destLat, destLon = destLon,
-            originLat = originLat, originLon = originLon,
-            polyline = poly,
-            km = km, etaMin = etaMin,
-            deviceId = deviceId(),
-        ) ?: run { Log.w(TAG, "startTrip: createTrip returned no trip_id (silent-drop guard tripped)"); return null }
+        val localId = "local-${System.currentTimeMillis()}"
 
         speedSum = 0.0; speedCount = 0
         lastProgressBroadcastMs = 0L
+        synchronized(bufferLock) { sampleBuffer.clear() }
+        pendingEnd = null
+        pendingCreate = CreateArgs(destName, destLat, destLon, originLat, originLon, poly, km, etaMin)
         _active.value = ActiveTrip(
-            tripId = tripId,
+            tripId = localId,
+            cloudTripId = null,
             destName = destName,
             destLat = destLat, destLon = destLon,
             km = km, etaMin = etaMin,
@@ -148,16 +162,18 @@ class TripManager private constructor(private val appContext: Context) {
             startedAtMs = System.currentTimeMillis(),
             lastLat = originLat, lastLon = originLon,
         )
-        Log.i(TAG, "trip started: $tripId -> $destName ($km km, $etaMin min${if (route == null) ", route pending" else ""})")
+        Log.i(TAG, "trip started (local): $localId -> $destName ($km km, $etaMin min${if (route == null) ", route pending" else ""})")
 
-        // Kick off the 5s cloud sampler (samples immediately, then every 5s until the trip ends).
+        // Kick off the 5s sampler (buffers offline) and the reconciler (creates the cloud trip when online).
         startSampler()
+        startReconciler()
 
-        // Broadcast trip.started so Guide/Storyteller/Sound react.
+        // Broadcast trip.started on the hive (loopback → works offline) with the STABLE local id, so
+        // Guide/Storyteller correlate on it and the matching trip.ended carries the same id.
         broadcast(
             "trip.started",
             JSONObject()
-                .put("trip_id", tripId)   // consumers (Guide->route.pois, Storyteller) correlate on this
+                .put("trip_id", localId)
                 .put("dest", destName)
                 .put("dest_lat", destLat)     // so Guide/Storyteller can locate the destination immediately
                 .put("dest_lon", destLon)
@@ -169,7 +185,7 @@ class TripManager private constructor(private val appContext: Context) {
                 .put("mode", "driving")
                 .toString(),
         )
-        tripId
+        localId
     }
 
     // ---- SAMPLE (per beat, deterministic) --------------------------------------------------
@@ -181,36 +197,49 @@ class TripManager private constructor(private val appContext: Context) {
      */
     suspend fun beatSample() {
         val current = _active.value ?: return
-        val key = apiKey() ?: return
         val fix = DaemonLocation.current() ?: run {
             Log.i(TAG, "beatSample: no daemon fix (GPS provider may be down) — skipping this beat")
             return
         }
         val speed = fix.speedKmh ?: 0.0
 
-        val stored = cloud.postSamples(
-            key, current.tripId,
-            listOf(TripsCloudClient.Sample(fix.lat, fix.lon, speed, fix.ts, lastEtaMin, lastRemainingKm)),
-        )
-        if (stored <= 0) {
-            Log.w(TAG, "beatSample: sample not stored (never-trust-200 guard)")
+        // ALWAYS record the sample locally first (offline-safe). It uploads now if we're online +
+        // reconciled, else it waits in the buffer for the reconciler to flush it.
+        synchronized(bufferLock) {
+            sampleBuffer.addLast(TripsCloudClient.Sample(fix.lat, fix.lon, speed, fix.ts, lastEtaMin, lastRemainingKm))
+            while (sampleBuffer.size > MAX_BUFFERED_SAMPLES) sampleBuffer.removeFirst()   // ~days of driving; safety cap
         }
 
-        // Update running state + avg accumulation.
+        // Update running state + avg accumulation (independent of whether the cloud has it yet).
         if (fix.speedKmh != null) { speedSum += speed; speedCount++ }
         val addedKm = if (current.lastLat != null && current.lastLon != null)
             haversineKm(current.lastLat, current.lastLon, fix.lat, fix.lon) else 0.0
         _active.value = current.copy(
-            samplesPosted = current.samplesPosted + (if (stored > 0) stored else 0),
             distanceSoFarKm = current.distanceSoFarKm + addedKm,
             lastSpeedKmh = fix.speedKmh,
             lastLat = fix.lat, lastLon = fix.lon,
         )
 
-        // NOTE: we intentionally do NOT broadcast `trip.progress` on the hive. The trail is
-        // persisted to trips-cloud via the sample POST above, and no agent consumes per-beat
-        // location — broadcasting it to all ~11 siblings every beat was pure hive spam. Trip
-        // lifecycle stays on the hive via trip.started / trip.ended only.
+        tryFlush(current.cloudTripId)   // drain the buffer to the cloud if we have an id + connectivity
+
+        // NOTE: we intentionally do NOT broadcast `trip.progress` on the hive — no agent consumes
+        // per-beat location; the trail is persisted via the sample POST. Lifecycle stays on the hive
+        // via trip.started / trip.ended only.
+    }
+
+    /** Drain the buffered samples to trips-cloud, if we have a cloud trip id + an api key. Best-effort. */
+    private suspend fun tryFlush(cloudId: String?) {
+        if (cloudId == null) return
+        val key = apiKey() ?: return
+        val batch = synchronized(bufferLock) { sampleBuffer.toList() }
+        if (batch.isEmpty()) return
+        val stored = cloud.postSamples(key, cloudId, batch)
+        if (stored > 0) {
+            synchronized(bufferLock) { repeat(minOf(stored, sampleBuffer.size)) { sampleBuffer.removeFirst() } }
+            _active.value = _active.value?.let { it.copy(samplesPosted = it.samplesPosted + stored) }
+        } else {
+            Log.w(TAG, "tryFlush: ${batch.size} sample(s) not stored yet — keeping buffered")
+        }
     }
 
     /** Start the 5s sampler loop: sample now, then every [SAMPLE_INTERVAL_MS] while the trip lives. */
@@ -230,6 +259,53 @@ class TripManager private constructor(private val appContext: Context) {
         samplerJob = null
     }
 
+    /**
+     * Background reconciler: while a trip has no cloud id (started offline / before self-registration),
+     * keep trying to CREATE it in trips-cloud. On success, flush the buffered samples. If the trip has
+     * already ENDED offline ([pendingEnd] set), also post the end. Survives for the app's lifetime; exits
+     * once there's nothing left to reconcile. (App-kill-while-offline persistence is a follow-up.)
+     */
+    private fun startReconciler() {
+        if (reconcilerJob?.isActive == true) return
+        reconcilerJob = samplerScope.launch {
+            while (isActive) {
+                val args = pendingCreate
+                val active = _active.value
+                val needsCreate = args != null && (active == null || active.cloudTripId == null)
+                if (needsCreate) {
+                    val key = apiKey()
+                    if (key != null && args != null) {
+                        val cloudId = cloud.createTrip(
+                            apiKey = key,
+                            destName = args.destName, destLat = args.destLat, destLon = args.destLon,
+                            originLat = args.originLat, originLon = args.originLon,
+                            polyline = args.polyline, km = args.km, etaMin = args.etaMin,
+                            deviceId = deviceId(),
+                        )
+                        if (cloudId != null) {
+                            pendingCreate = null
+                            _active.value?.let { _active.value = it.copy(cloudTripId = cloudId) }
+                            Log.i(TAG, "trip reconciled → cloud $cloudId; flushing ${sampleBuffer.size} buffered sample(s)")
+                            tryFlush(cloudId)
+                            // Ended before reconciling? (pendingEnd set by endTrip) finish it now.
+                            val avg = pendingEnd
+                            if (avg != null) {
+                                tryFlush(cloudId)                       // any tail samples
+                                cloud.endTrip(key, cloudId, avgKmh = avg)
+                                pendingEnd = null
+                                Log.i(TAG, "offline trip finalised in cloud: $cloudId")
+                            }
+                        }
+                    }
+                }
+                // Nothing left to do → stop the reconciler.
+                if (pendingCreate == null && pendingEnd == null &&
+                    (_active.value == null || _active.value?.cloudTripId != null)) return@launch
+                delay(RECONCILE_INTERVAL_MS)
+            }
+        }
+    }
+
     // ---- END -------------------------------------------------------------------------------
 
     /**
@@ -239,25 +315,40 @@ class TripManager private constructor(private val appContext: Context) {
     suspend fun endTrip(): TripsCloudClient.TripSummary? = lock.withLock {
         val current = _active.value ?: return null
         stopSampler()
-        val key = apiKey() ?: run { _active.value = null; return null }
         val avg = if (speedCount > 0) speedSum / speedCount else null
-        val summary = cloud.endTrip(key, current.tripId, avgKmh = avg)
-        if (summary == null) {
-            Log.w(TAG, "endTrip: end returned no trip_id (never-trust-200 guard)")
-        } else {
-            Log.i(TAG, "trip ended: ${summary.tripId} (${summary.durationMin} min, ${summary.sampleCount} samples)")
-            broadcast(
-                "trip.ended",
-                JSONObject()
-                    .put("trip_id", summary.tripId)
-                    .put("duration_min", summary.durationMin)
-                    .put("km", current.km)
-                    .put("avg_kmh", summary.avgKmh ?: avg ?: 0.0)
-                    .toString(),
-            )
-        }
+        val durationMin = ((System.currentTimeMillis() - current.startedAtMs) / 60_000.0)
+
+        // Broadcast trip.ended on the hive (loopback → offline-safe) with the STABLE local id — the same
+        // id siblings saw at trip.started, whether or not the cloud knows about it yet.
+        broadcast(
+            "trip.ended",
+            JSONObject()
+                .put("trip_id", current.tripId)
+                .put("duration_min", durationMin)
+                .put("km", current.km)
+                .put("avg_kmh", avg ?: 0.0)
+                .toString(),
+        )
         _active.value = null
-        summary
+
+        val cloudId = current.cloudTripId
+        val key = apiKey()
+        if (cloudId != null && key != null) {
+            // Reconciled + online: flush the tail, then post end now.
+            tryFlush(cloudId)
+            val summary = cloud.endTrip(key, cloudId, avgKmh = avg)
+            if (summary != null) {
+                pendingCreate = null; pendingEnd = null
+                Log.i(TAG, "trip ended: ${summary.tripId} (${summary.durationMin} min, ${summary.sampleCount} samples)")
+                return summary
+            }
+            Log.w(TAG, "endTrip: end POST failed — reconciler will finish it")
+        }
+        // Not reconciled yet (offline the whole drive), or the end POST failed → hand off to the
+        // reconciler: once online it creates the cloud trip, flushes the buffer, and posts the end.
+        pendingEnd = avg ?: 0.0
+        startReconciler()
+        null
     }
 
     // ---- reads for UI + skills -------------------------------------------------------------
@@ -350,6 +441,8 @@ class TripManager private constructor(private val appContext: Context) {
         private const val TAG = "TripManager"
         private const val PROGRESS_THROTTLE_MS = 60_000L
         private const val SAMPLE_INTERVAL_MS = 5_000L   // 5s high-cadence cloud sampling while driving
+        private const val RECONCILE_INTERVAL_MS = 8_000L    // retry creating the cloud trip while offline
+        private const val MAX_BUFFERED_SAMPLES = 100_000    // ~5.8 days at 5s — safety cap on the offline buffer
 
         @Volatile private var instance: TripManager? = null
         fun get(context: Context): TripManager =

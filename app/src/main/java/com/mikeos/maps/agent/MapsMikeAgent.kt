@@ -136,12 +136,16 @@ object MapsMikeAgent {
                 if (dest.isBlank()) return@Skill "start_trip needs a dest"
                 if (trips.active.value != null) return@Skill "A trip is already active to ${trips.active.value?.destName}. End it first."
                 val place = trips.geocode(dest) ?: return@Skill "Couldn't find a place called '$dest'."
-                val fix = trips.currentFix() ?: return@Skill "No current location fix from the daemon — can't start."
-                val r = trips.route(fix.lat, fix.lon, place.lat, place.lon)
-                    ?: return@Skill "Couldn't compute a route to '$dest'."
-                val id = trips.startTrip(place.name, place.lat, place.lon, fix.lat, fix.lon, r)
-                    ?: return@Skill "Failed to create the trip in trips-cloud."
-                "Trip started to ${place.name} (${"%.1f".format(r.km)} km, ETA ${"%.0f".format(r.etaMin)} min). trip_id=$id. Announced trip.started."
+                // Always startable: a missing GPS fix or route just means "start anyway" — both fill in
+                // as the drive begins (the trip starts locally and reconciles online).
+                val fix = trips.currentFix()
+                val r = if (fix != null) trips.route(fix.lat, fix.lon, place.lat, place.lon) else null
+                val oLat = fix?.lat ?: place.lat
+                val oLon = fix?.lon ?: place.lon
+                val id = trips.startTrip(place.name, place.lat, place.lon, oLat, oLon, r)
+                val etaTxt = if (r != null) " (${"%.1f".format(r.km)} km, ETA ${"%.0f".format(r.etaMin)} min)"
+                    else " (route + ETA will load as you drive)"
+                "Trip started to ${place.name}$etaTxt. trip_id=$id. Announced trip.started."
             },
         ),
         Skill(
