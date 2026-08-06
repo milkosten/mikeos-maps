@@ -59,6 +59,10 @@ class HeartbeatService : Service() {
             val agent = MikeAgent.get()
             if (agent != null) {
                 runCatching {
+                    // CROSS-DEVICE SYNC: pull this app's shared (user-scoped) cloud state into its
+                    // local cache every beat, OUTSIDE the change-gate, so edits Mike made on his
+                    // OTHER device appear here live. A sync error must never skip the beat.
+                    runCatching { syncProvider?.invoke() }
                     val perception = perceptionProvider?.invoke() ?: ""
                     // Change-gated most beats (skip the GPU when nothing changed), but FORCE a
                     // full reason cycle every FORCE_EVERY_BEATS so proactive agents still act on
@@ -96,6 +100,15 @@ class HeartbeatService : Service() {
          */
         @Volatile
         var perceptionProvider: (suspend () -> String)? = null
+
+        /**
+         * Optional per-beat cloud pull the app registers (CROSS-DEVICE SYNC). Runs every
+         * beat OUTSIDE the change-gate: the app refreshes its local state from its
+         * user-scoped cloud so edits from Mike's OTHER device appear here live. If null,
+         * no pull happens (app relies on pull-on-open only).
+         */
+        @Volatile
+        var syncProvider: (suspend () -> Unit)? = null
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, HeartbeatService::class.java))
