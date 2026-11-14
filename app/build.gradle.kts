@@ -14,8 +14,8 @@ android {
         applicationId = "com.mikeos.maps"
         minSdk = 31
         targetSdk = 35
-        versionCode = 60
-        versionName = "0.35.0-offline-trip"
+        versionCode = 61
+        versionName = "0.35.1-offline-trip"
 
         // MikeDaemon runs ON the phone (loopback). Auth token is pinned for dev.
         buildConfigField("String", "DAEMON_BASE_URL", "\"https://127.0.0.1:7743\"")
@@ -31,7 +31,7 @@ android {
         buildConfigField(
             "String",
             "TRIPS_CLOUD_URL",
-            "\"https://mikeos-trips-cloud-production.up.railway.app\""
+            "\"https://trips-api.osmike.com\""
         )
 
         // mikeos-basemap: self-hosted OSM vector basemap (MapLibre style + planet tiles). The app
