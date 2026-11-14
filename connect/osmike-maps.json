@@ -1,0 +1,47 @@
+{
+  "slug": "osmike-maps",
+  "name": "OsMike Maps",
+  "base_url": "https://mikeos-trips-cloud-production.up.railway.app",
+  "allowed_hosts": [
+    "mikeos-trips-cloud-production.up.railway.app"
+  ],
+  "auth": {
+    "type": "none"
+  },
+  "credentials": [],
+  "setup": "Public open-data API; no credentials required.",
+  "headers": {
+    "Accept": "application/json"
+  },
+  "test": {
+    "command": "health",
+    "params": {}
+  },
+  "commands": {
+    "route": {
+      "summary": "Calculate a stateless two-point car route; no saved trips or personal data.",
+      "method": "POST",
+      "write": false,
+      "path": "/api/route",
+      "params": {
+        "from": {
+          "in": "body",
+          "type": "json",
+          "required": true,
+          "description": "Origin coordinate object: lat (-90 to 90), lon (-180 to 180), decimal degrees."
+        },
+        "to": {
+          "in": "body",
+          "type": "json",
+          "required": true,
+          "description": "Destination coordinate object: lat (-90 to 90), lon (-180 to 180), decimal degrees."
+        }
+      }
+    },
+    "health": {
+      "summary": "Check public routing service health without login.",
+      "method": "GET",
+      "path": "/api/health"
+    }
+  }
+}
