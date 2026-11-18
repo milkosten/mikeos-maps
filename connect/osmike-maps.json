@@ -1,9 +1,9 @@
 {
   "slug": "osmike-maps",
   "name": "OsMike Maps",
-  "base_url": "https://mikeos-trips-cloud-production.up.railway.app",
+  "base_url": "https://trips-api.osmike.com",
   "allowed_hosts": [
-    "mikeos-trips-cloud-production.up.railway.app"
+    "trips-api.osmike.com"
   ],
   "auth": {
     "type": "none"

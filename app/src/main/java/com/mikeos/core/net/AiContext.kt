@@ -25,7 +25,7 @@ import java.util.concurrent.TimeUnit
  */
 object AiContext {
     private const val TAG = "AiContext"
-    const val BASE_URL = "https://mikeos-ai-cloud-production.up.railway.app"
+    const val BASE_URL = "https://ai-api.osmike.com"
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
     private val client: OkHttpClient by lazy {

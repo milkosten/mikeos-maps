@@ -90,7 +90,7 @@ See `mikeos-architecture/docs/PUBLISHING-APP-UPDATES.md` for the full model.
 - **MikeDaemon** (on-device) at `https://127.0.0.1:7743` — Bearer token, self-signed loopback TLS
   trusted only for `127.0.0.1`. MikeMaps reads the shared location fix here (`GET /api/location`,
   auth-exempt) via `net/DaemonLocation.kt`, and reasons via `POST /api/agent/chat`.
-- **mikeos-trips-cloud** (`https://mikeos-trips-cloud-production.up.railway.app`) — per-user journeys,
+- **mikeos-trips-cloud** (`https://trips-api.osmike.com`) — per-user journeys,
   speed/GPS trails, and the congestion model. Valid public TLS → standard OkHttp + DoH (this ROM's
   system DNS is flaky). `/api/route` is keyless; trip calls carry the hive `X-API-KEY`. See
   `net/TripsCloudClient.kt`.
